@@ -1,0 +1,50 @@
+version: '3.4'
+
+services:
+  new-api:
+    image: new-api:gateway
+    container_name: new-api
+    restart: always
+    ports:
+      - "3500:3000"
+    volumes:
+      - /data:/data
+    environment:
+      - SQL_DSN=root:123456@tcp(mysql:3306)/new_api
+      - REDIS_CONN_STRING=redis://redis:6379
+      - TZ=Asia/Shanghai
+      - BATCH_UPDATE_ENABLED=true
+      - ERROR_LOG_ENABLED=true
+    depends_on:
+      - mysql
+      - redis
+    networks:
+      - new-api-network
+
+  mysql:
+    image: mysql:8.2
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_DATABASE: new_api
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - new-api-network
+    ports:
+      - "3306:3306"
+
+  redis:
+    image: redis:7-alpine
+    container_name: redis
+    restart: always
+    networks:
+      - new-api-network
+
+volumes:
+  mysql_data:
+
+networks:
+  new-api-network:
+    driver: bridge

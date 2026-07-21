@@ -488,6 +488,10 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 
 	attachQuotaSaturation(ctx, relayInfo, other)
 
+	if respBody := getAggregatedUpstreamResponseBody(ctx); respBody != "" {
+		other["upstream_response_body"] = respBody
+	}
+
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
@@ -505,4 +509,13 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 	gopool.Go(func() {
 		perfmetrics.RecordRelaySample(relayInfo, true, int64(summary.CompletionTokens))
 	})
+}
+
+func getAggregatedUpstreamResponseBody(ctx *gin.Context) string {
+	if upstreamResp, exists := ctx.Get("_content_upstream_resp"); exists {
+		if msg, ok := upstreamResp.(*HttpMessage); ok && msg.Body != "" {
+			return msg.Body
+		}
+	}
+	return ""
 }

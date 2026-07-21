@@ -32,6 +32,11 @@ type ModelRequest struct {
 func Distribute() func(c *gin.Context) {
 	return func(c *gin.Context) {
 		var channel *model.Channel
+		if gw, gwOk := common.GetContextKey(c, constant.ContextKeyGatewayLockedChannelId); gwOk {
+			if id, idOk := gw.(int); idOk && id > 0 {
+				common.SetContextKey(c, constant.ContextKeyTokenSpecificChannelId, strconv.Itoa(id))
+			}
+		}
 		channelId, ok := common.GetContextKey(c, constant.ContextKeyTokenSpecificChannelId)
 		modelRequest, shouldSelectChannel, err := getModelRequest(c)
 		if err != nil {

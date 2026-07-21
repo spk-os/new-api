@@ -191,7 +191,33 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 	}
 
 	HandleStreamFinalResponse(c, info, claudeInfo)
+
+	reconstructClaudeStreamResponse(c, claudeInfo)
+
 	return claudeInfo.Usage, nil
+}
+
+func reconstructClaudeStreamResponse(c *gin.Context, claudeInfo *ClaudeResponseInfo) {
+	if !common.ContentLogEnabled || claudeInfo.ResponseText.Len() == 0 {
+		return
+	}
+	if resp, exists := c.Get("_content_upstream_resp"); exists {
+		if msg, ok := resp.(*service.HttpMessage); ok {
+			reconstructed := map[string]interface{}{
+				"id":      claudeInfo.ResponseId,
+				"type":    "message",
+				"role":    "assistant",
+				"content": []map[string]string{{"type": "text", "text": claudeInfo.ResponseText.String()}},
+				"model":   claudeInfo.Model,
+			}
+			if claudeInfo.Usage != nil {
+				reconstructed["usage"] = claudeInfo.Usage
+			}
+			if body, err := common.Marshal(reconstructed); err == nil {
+				msg.Body = string(body)
+			}
+		}
+	}
 }
 
 func HandleClaudeResponseData(c *gin.Context, info *relaycommon.RelayInfo, claudeInfo *ClaudeResponseInfo, httpResp *http.Response, data []byte) *types.NewAPIError {

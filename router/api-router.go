@@ -204,6 +204,19 @@ func SetApiRouter(router *gin.Engine) {
 			optionRoute.GET("/waffo-pancake/subscription-product-options", controller.ListWaffoPancakeSubscriptionProductOptions)
 		}
 
+		gatewayRoute := apiRouter.Group("/admin/gateway")
+		gatewayRoute.Use(middleware.RootAuth())
+		{
+			gatewayRoute.GET("/config", controller.GetGatewayConfig)
+			gatewayRoute.PUT("/config", controller.SaveGatewayConfig)
+			gatewayRoute.POST("/config/validate", controller.ValidateGatewayConfig)
+			gatewayRoute.POST("/config/sync", controller.SyncGatewayChannels)
+			gatewayRoute.POST("/route/preview", controller.PreviewGatewayRoute)
+			gatewayRoute.GET("/affinity", controller.GetGatewayAffinity)
+			gatewayRoute.DELETE("/affinity", controller.ClearGatewayAffinity)
+			gatewayRoute.GET("/stats", controller.GetGatewayStats)
+		}
+
 		// Custom OAuth provider management (root only)
 		customOAuthRoute := apiRouter.Group("/custom-oauth-provider")
 		customOAuthRoute.Use(middleware.RootAuth())
@@ -276,6 +289,7 @@ func SetApiRouter(router *gin.Engine) {
 		logRoute.GET("/search", middleware.AdminAuth(), controller.SearchAllLogs)
 		logRoute.GET("/self", middleware.UserAuth(), controller.GetUserLogs)
 		logRoute.GET("/self/search", middleware.UserAuth(), middleware.SearchRateLimit(), controller.SearchUserLogs)
+		logRoute.GET("/content", middleware.AdminAuth(), controller.GetContentLog)
 
 		systemTaskRoute := apiRouter.Group("/system-task")
 		systemTaskRoute.Use(middleware.RootAuth())

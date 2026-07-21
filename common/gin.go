@@ -154,6 +154,22 @@ func UnmarshalBodyReusable(c *gin.Context, v any) error {
 	return nil
 }
 
+func GetBodyString(c *gin.Context) (string, error) {
+	storage, err := GetBodyStorage(c)
+	if err != nil {
+		return "", err
+	}
+	body, err := storage.Bytes()
+	if err != nil {
+		return "", err
+	}
+	if _, seekErr := storage.Seek(0, io.SeekStart); seekErr != nil {
+		return "", seekErr
+	}
+	c.Request.Body = io.NopCloser(storage)
+	return string(body), nil
+}
+
 func SetContextKey(c *gin.Context, key constant.ContextKey, value any) {
 	c.Set(string(key), value)
 }

@@ -84,17 +84,14 @@ export function getNormalizedDateRange(
 }
 
 /**
- * Calculate a rolling date range ending at the current moment.
- * Example: 1 day means the last 24 hours, not yesterday 00:00 to today 23:59.
+ * Calculate date range using natural day boundaries.
+ * Example: 1 day means today 00:00:00 to today 23:59:59, not a rolling 24h window.
  */
 export function getRollingDateRange(
   days: number,
   fromDate: Date = new Date()
 ): { start: Date; end: Date } {
-  const end = new Date(fromDate)
-  const start = new Date(end.getTime() - days * 24 * 60 * 60 * 1000)
-
-  return { start, end }
+  return getNormalizedDateRange(Math.max(0, days - 1), fromDate)
 }
 
 /**

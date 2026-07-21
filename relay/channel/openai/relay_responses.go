@@ -1,6 +1,7 @@
 package openai
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -80,6 +81,15 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 	var usage = &dto.Usage{}
 	var responseTextBuilder strings.Builder
 
+	// Track response metadata and output items for content log reconstruction.
+	// The ChatGPT backend sends output items as separate SSE events
+	// (response.output_item.done) and the final response.completed event has
+	// an empty output array. We collect the items here so that
+	// reconstructResponsesStreamResponse can build a single aggregated JSON
+	// for the content log, matching the non-streaming response format.
+	var baseResponse *dto.OpenAIResponsesResponse
+	var outputItems []dto.ResponsesOutput
+
 	helper.StreamScannerHandler(c, resp, info, func(data string, sr *helper.StreamResult) {
 
 		// 检查当前数据是否包含 completed 状态和 usage 信息
@@ -91,8 +101,13 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		}
 		sendResponsesStreamData(c, streamResponse, data)
 		switch streamResponse.Type {
+		case "response.created", "response.in_progress":
+			if streamResponse.Response != nil && baseResponse == nil {
+				baseResponse = streamResponse.Response
+			}
 		case "response.completed":
 			if streamResponse.Response != nil {
+				baseResponse = streamResponse.Response
 				if streamResponse.Response.Usage != nil {
 					if streamResponse.Response.Usage.InputTokens != 0 {
 						usage.PromptTokens = streamResponse.Response.Usage.InputTokens
@@ -120,6 +135,7 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 		case dto.ResponsesOutputTypeItemDone:
 			// 函数调用处理
 			if streamResponse.Item != nil {
+				outputItems = append(outputItems, *streamResponse.Item)
 				switch streamResponse.Item.Type {
 				case dto.BuildInCallWebSearchCall:
 					if info != nil && info.ResponsesUsageInfo != nil && info.ResponsesUsageInfo.BuiltInTools != nil {
@@ -148,5 +164,59 @@ func OaiResponsesStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp
 
 	usage.TotalTokens = usage.PromptTokens + usage.CompletionTokens
 
+	reconstructResponsesStreamResponse(c, baseResponse, outputItems, usage, responseTextBuilder.String())
+
 	return usage, nil
+}
+
+// reconstructResponsesStreamResponse builds a single aggregated OpenAIResponsesResponse
+// from the collected stream events and stores it as the upstream response body for
+// content logging. This mirrors the non-streaming response format so that streaming
+// and non-streaming requests produce identical content log entries.
+func reconstructResponsesStreamResponse(c *gin.Context, baseResponse *dto.OpenAIResponsesResponse, outputItems []dto.ResponsesOutput, usage *dto.Usage, fullText string) {
+	if !common.ContentLogEnabled {
+		return
+	}
+	resp, exists := c.Get("_content_upstream_resp")
+	if !exists {
+		return
+	}
+	msg, ok := resp.(*service.HttpMessage)
+	if !ok {
+		return
+	}
+
+	if baseResponse != nil {
+		if len(outputItems) > 0 {
+			baseResponse.Output = outputItems
+		}
+		if body, err := common.Marshal(baseResponse); err == nil {
+			msg.Body = string(body)
+		}
+		return
+	}
+
+	if fullText == "" {
+		return
+	}
+	reconstructed := dto.OpenAIResponsesResponse{
+		Object: "response",
+		Status: json.RawMessage(`"completed"`),
+		Output: []dto.ResponsesOutput{
+			{
+				Type:   "message",
+				Status: "completed",
+				Role:   "assistant",
+				Content: []dto.ResponsesOutputContent{
+					{Type: "output_text", Text: fullText},
+				},
+			},
+		},
+	}
+	if usage != nil {
+		reconstructed.Usage = usage
+	}
+	if body, err := common.Marshal(reconstructed); err == nil {
+		msg.Body = string(body)
+	}
 }

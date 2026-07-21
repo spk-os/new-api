@@ -189,6 +189,8 @@ func geminiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http
 		patchGeminiZeroCompletionUsage(c, info, usage, responseText.String(), imageCount)
 	}
 
+	reconstructGeminiStreamResponse(c, info, &responseText, usage)
+
 	return usage, nil
 }
 
@@ -293,9 +295,40 @@ func GeminiChatStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *
 	if handleErr != nil {
 		common.SysLog("send final response failed: " + handleErr.Error())
 	}
+
 	return usage, nil
 }
 
+func reconstructGeminiStreamResponse(c *gin.Context, info *relaycommon.RelayInfo, responseText *strings.Builder, usage *dto.Usage) {
+	if !common.ContentLogEnabled || responseText.Len() == 0 {
+		return
+	}
+	if resp, exists := c.Get("_content_upstream_resp"); exists {
+		if msg, ok := resp.(*service.HttpMessage); ok {
+			reconstructed := map[string]interface{}{
+				"id":      helper.GetResponseID(c),
+				"object":  "chat.completion",
+				"created": common.GetTimestamp(),
+				"model":   info.UpstreamModelName,
+				"choices": []map[string]interface{}{
+					{
+						"index": 0,
+						"message": map[string]string{
+							"role":    "assistant",
+							"content": responseText.String(),
+						},
+					},
+				},
+			}
+			if usage != nil {
+				reconstructed["usage"] = usage
+			}
+			if body, err := common.Marshal(reconstructed); err == nil {
+				msg.Body = string(body)
+			}
+		}
+	}
+}
 func GeminiChatHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {
 	responseBody, err := io.ReadAll(resp.Body)
 	if err != nil {

@@ -21,6 +21,7 @@ import (
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	gateway "github.com/QuantumNous/new-api/service/gateway"
 	"github.com/QuantumNous/new-api/setting"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
@@ -230,6 +231,8 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		relayInfo.LastError = newAPIError
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
+
+		recordFailedConsumeLog(c, relayInfo, channel, newAPIError)
 
 		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
 			break
@@ -653,4 +656,65 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 		return false
 	}
 	return true
+}
+
+func recordFailedConsumeLog(c *gin.Context, relayInfo *relaycommon.RelayInfo, channel *model.Channel, apiErr *types.NewAPIError) {
+	if relayInfo == nil || channel == nil || apiErr == nil {
+		return
+	}
+	if !common.LogConsumeEnabled {
+		return
+	}
+
+	startTime := common.GetContextKeyTime(c, constant.ContextKeyRequestStartTime)
+	useTimeSeconds := 0
+	if !startTime.IsZero() {
+		useTimeSeconds = int(time.Since(startTime).Seconds())
+	}
+
+	tokenName := c.GetString("token_name")
+	group := relayInfo.UsingGroup
+	if group == "" {
+		group = c.GetString("group")
+	}
+
+	other := map[string]interface{}{
+		"error_type":   apiErr.GetErrorType(),
+		"error_code":   apiErr.GetErrorCode(),
+		"status_code":  apiErr.StatusCode,
+		"error_reason": apiErr.MaskSensitiveErrorWithStatusCode(),
+	}
+
+	if gw, ok := c.Get("_gateway_plan"); ok {
+		if plan, ok := gw.(*gateway.GatewayPlan); ok && plan != nil {
+			other["gateway_group"] = common.GetContextKeyString(c, constant.ContextKeyUsingGroup)
+			if len(plan.Candidates) > 0 {
+				other["gateway_provider"] = plan.Candidates[0].ProviderId
+				other["gateway_actual_model"] = plan.Candidates[0].ActualModel
+			}
+			other["gateway_affinity_status"] = "disabled"
+			if plan.Profile != nil && plan.Profile.Affinity != nil && plan.Profile.Affinity.Enabled {
+				if plan.AffinityHit {
+					other["gateway_affinity_status"] = "hit"
+				} else {
+					other["gateway_affinity_status"] = "miss"
+				}
+			}
+		}
+	}
+
+	model.RecordConsumeLog(c, relayInfo.UserId, model.RecordConsumeLogParams{
+		ChannelId:        channel.Id,
+		PromptTokens:     0,
+		CompletionTokens: 0,
+		ModelName:        relayInfo.OriginModelName,
+		TokenName:        tokenName,
+		Quota:            0,
+		Content:          "请求失败: " + apiErr.MaskSensitiveErrorWithStatusCode(),
+		TokenId:          relayInfo.TokenId,
+		UseTimeSeconds:   useTimeSeconds,
+		IsStream:         relayInfo.IsStream,
+		Group:            group,
+		Other:            other,
+	})
 }

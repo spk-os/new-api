@@ -92,6 +92,20 @@ var MemoryCacheEnabled bool
 
 var LogConsumeEnabled = true
 
+var ContentLogEnabled = false
+var ContentLogMaxSizeMB = 100
+
+var GatewayRoutingEnabled = false
+var GatewayRoutingConfigPath = ""
+var GatewayRoutingConfigYaml = ""
+var GatewayAffinityEnabled = true
+var GatewayChannelAutoSync = false
+var GatewayCostSyncEnabled = false
+
+// GatewayConfigReloadHook is set by the gateway package at init to enable
+// hot-reload of YAML config from the options table without an import cycle.
+var GatewayConfigReloadHook func(yaml string) error
+
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}
 

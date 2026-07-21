@@ -58,6 +58,7 @@ import {
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
 import { DetailsDialog } from '../dialogs/details-dialog'
+import { ContentLogDialog } from '../dialogs/content-log-dialog'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
@@ -832,6 +833,75 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
       maxSize: 200,
     }
   )
+
+  columns.push({
+    id: 'backend_model',
+    header: t('Backend Model'),
+    cell: function BackendModelCell({ row }) {
+      const log = row.original
+      if (!isDisplayableLogType(log.type)) return null
+      const other = parseLogOther(log.other)
+      const useChannel = other?.admin_info?.use_channel
+      const upstreamModel = other?.upstream_model_name
+
+      const channelDisplay = log.channel_name
+        ? `${log.channel_name} #${log.channel}`
+        : `#${log.channel}`
+
+      const modelDisplay = upstreamModel || log.model_name
+
+      return (
+        <div className='flex max-w-[200px] flex-col gap-0.5'>
+          <span className='text-muted-foreground/70 truncate text-[11px]'>
+            {channelDisplay}
+            {useChannel && useChannel.length > 1 && (
+              <span className='text-muted-foreground/40 ml-1'>
+                +{useChannel.length - 1}
+              </span>
+            )}
+          </span>
+          <span className='font-mono text-xs tabular-nums'>
+            {modelDisplay}
+          </span>
+        </div>
+      )
+    },
+    meta: { label: t('Backend Model'), mobileHidden: true },
+    size: 160,
+  })
+
+  columns.push({
+    id: 'content_log',
+    header: t('Content Log'),
+    cell: function ContentLogCell({ row }) {
+      const [dialogOpen, setDialogOpen] = useState(false)
+      const log = row.original
+      const requestId = log.request_id
+
+      if (!requestId || !isDisplayableLogType(log.type)) {
+        return <span className='text-muted-foreground/40'>—</span>
+      }
+
+      return (
+        <>
+          <button
+            type='button'
+            className='text-muted-foreground hover:text-foreground text-xs hover:underline'
+            onClick={() => setDialogOpen(true)}
+          >
+            {t('View Content')}
+          </button>
+          <ContentLogDialog
+            requestId={requestId}
+            open={dialogOpen}
+            onOpenChange={setDialogOpen}
+          />
+        </>
+      )
+    },
+    meta: { label: t('Content Log'), mobileHidden: true },
+    size: 120,
+  })
 
   return columns
 }

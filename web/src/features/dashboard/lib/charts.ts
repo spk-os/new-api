@@ -78,6 +78,12 @@ export function processChartData(
 
   const formatInt = (value: number) =>
     Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+  const formatTokensWan = (value: number) => {
+    if (value >= 10000) {
+      return (value / 10000).toFixed(2) + '万'
+    }
+    return formatInt(value)
+  }
   const formatQuotaValue = (value: number) => renderQuotaCompat(value, 4)
   const formatQuotaTotal = (value: number) => renderQuotaCompat(value, 2)
 
@@ -206,6 +212,21 @@ export function processChartData(
           visible: true,
           text: tt('Call Count Ranking'),
         },
+      },
+      spec_token_rank: {
+        type: 'bar',
+        data: [{ id: 'tokenRankData', values: [] }],
+        xField: 'Tokens',
+        yField: 'Model',
+        seriesField: 'Model',
+        direction: 'horizontal',
+        title: {
+          visible: true,
+          text: tt('Token Usage Ranking'),
+          subtext: tt('No data available'),
+        },
+        legends: { visible: false },
+        background: { fill: 'transparent' },
       },
       totalQuotaDisplay: formatQuotaTotal(0),
       totalCountDisplay: formatInt(0),
@@ -450,6 +471,14 @@ export function processChartData(
     rankValues = allRankValues
   }
 
+  const tokenRankValues = Array.from(modelTotalsMap.entries())
+    .map(([model, stats]) => ({
+      Model: model,
+      Tokens: Number(stats.tokens) || 0,
+    }))
+    .filter((item) => item.Tokens > 0)
+    .sort((a, b) => b.Tokens - a.Tokens)
+
   return {
     spec_pie: {
       type: 'pie',
@@ -680,6 +709,48 @@ export function processChartData(
           ],
         },
       },
+      background: { fill: 'transparent' },
+      animation: true,
+    },
+    spec_token_rank: {
+      type: 'bar',
+      data: [{ id: 'tokenRankData', values: tokenRankValues }],
+      xField: 'Tokens',
+      yField: 'Model',
+      seriesField: 'Model',
+      direction: 'horizontal',
+      title: {
+        visible: true,
+        text: tt('Token Usage Ranking'),
+      },
+      legends: { visible: false },
+      bar: {
+        state: {
+          hover: { stroke: '#000', lineWidth: 1 },
+        },
+      },
+      label: {
+        visible: true,
+        position: 'outside',
+        formatMethod: (value: number) => formatTokensWan(value),
+        style: { fontSize: 11 },
+      },
+      axes: [
+        { orient: 'left', type: 'band' },
+        { orient: 'bottom', type: 'linear', visible: false },
+      ],
+      tooltip: {
+        mark: {
+          content: [
+            {
+              key: (datum: Record<string, unknown>) => datum?.Model,
+              value: (datum: Record<string, unknown>) =>
+                formatTokensWan(Number(datum?.Tokens) || 0),
+            },
+          ],
+        },
+      },
+      color: modelColor,
       background: { fill: 'transparent' },
       animation: true,
     },

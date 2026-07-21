@@ -6,6 +6,7 @@ import (
 
 	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/model"
+	"github.com/QuantumNous/new-api/service"
 
 	"github.com/gin-gonic/gin"
 )
@@ -148,4 +149,22 @@ func GetLogsSelfStat(c *gin.Context) {
 		},
 	})
 	return
+}
+
+func GetContentLog(c *gin.Context) {
+	requestID := c.Query("request_id")
+	if requestID == "" {
+		common.ApiErrorMsg(c, "request_id is required")
+		return
+	}
+	entry, err := service.QueryContentLog(requestID)
+	if err != nil {
+		common.ApiError(c, err)
+		return
+	}
+	if entry == nil {
+		common.ApiErrorMsg(c, "content log not found")
+		return
+	}
+	common.ApiSuccess(c, entry)
 }

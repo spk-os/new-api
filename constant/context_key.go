@@ -72,4 +72,11 @@ const (
 	// fallback in authHelper (finishAdminAudit) skips its record to avoid
 	// duplicate entries.
 	ContextKeyAuditLogged ContextKey = "audit_logged"
+
+	// LLM Gateway routing keys.
+	ContextKeyGatewayPlan            ContextKey = "_gateway_plan"
+	ContextKeyGatewayLockedChannelId ContextKey = "_gateway_locked_channel_id"
+	ContextKeyGatewayClientId        ContextKey = "_gateway_client_id"
+	ContextKeyGatewayTaskId          ContextKey = "_gateway_task_id"
+	ContextKeyGatewayActualModel     ContextKey = "_gateway_actual_model"
 )

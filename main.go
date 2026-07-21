@@ -28,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/router"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/service/gateway"
 	_ "github.com/QuantumNous/new-api/setting/performance_setting"
 	"github.com/QuantumNous/new-api/setting/ratio_setting"
 
@@ -184,6 +185,10 @@ func main() {
 	server.Use(middleware.Version())
 	server.Use(middleware.I18n())
 	middleware.SetUpLogger(server)
+
+	registerContentCaptureMiddleware(server)
+	registerGatewayMiddleware(server)
+
 	InjectUmamiAnalytics()
 	InjectGoogleAnalytics()
 
@@ -317,6 +322,19 @@ func InitResources() error {
 	}
 	model.InitOptionMap()
 
+	gateway.SetDBHooks(
+		func(key string) (string, bool) {
+			common.OptionMapRWMutex.RLock()
+			val, ok := common.OptionMap[key]
+			common.OptionMapRWMutex.RUnlock()
+			return val, ok
+		},
+		model.UpdateOption,
+	)
+	gateway.InitGatewayConfig()
+
+	initContentLogger()
+
 	// 清理旧的磁盘缓存文件
 	common.CleanupOldCacheFiles()
 
@@ -358,4 +376,18 @@ func InitResources() error {
 	service.StartAuthArtifactCleanup()
 
 	return nil
+}
+
+func registerContentCaptureMiddleware(server *gin.Engine) {
+	service.InitContentCaptureRoutes(server)
+}
+
+func registerGatewayMiddleware(server *gin.Engine) {
+	server.Use(gateway.GatewayStrategyMiddleware())
+	common.GatewayConfigReloadHook = gateway.HandleGatewayOptionUpdate
+	common.SysLog("gateway: strategy middleware registered")
+}
+
+func initContentLogger() {
+	service.InitContentLogger()
 }

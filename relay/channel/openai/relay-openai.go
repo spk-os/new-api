@@ -184,7 +184,57 @@ func OaiStreamHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Re
 
 	HandleFinalResponse(c, info, lastStreamData, responseId, createAt, model, systemFingerprint, usage, containStreamUsage)
 
+	reconstructOaiStreamResponse(c, info, responseTextBuilder.String(), usage, responseId, createAt, model, containStreamUsage, lastStreamData)
+
 	return usage, nil
+}
+
+func reconstructOaiStreamResponse(c *gin.Context, info *relaycommon.RelayInfo, fullContent string, usage *dto.Usage, responseId string, createAt int64, model string, containStreamUsage bool, lastStreamData string) {
+	if !common.ContentLogEnabled || fullContent == "" {
+		return
+	}
+	if resp, exists := c.Get("_content_upstream_resp"); exists {
+		msg, ok := resp.(*service.HttpMessage)
+		if !ok {
+			return
+		}
+
+		var lastChunk struct {
+			Choices []struct {
+				FinishReason *string `json:"finish_reason"`
+			} `json:"choices"`
+		}
+		_ = common.Unmarshal([]byte(lastStreamData), &lastChunk)
+
+		finishReason := "stop"
+		if len(lastChunk.Choices) > 0 && lastChunk.Choices[0].FinishReason != nil {
+			finishReason = *lastChunk.Choices[0].FinishReason
+		}
+
+		reconstructed := dto.TextResponse{
+			Id:      responseId,
+			Object:  "chat.completion",
+			Created: createAt,
+			Model:   model,
+			Choices: []dto.OpenAITextResponseChoice{
+				{
+					Index: 0,
+					Message: dto.Message{
+						Role:    "assistant",
+						Content: fullContent,
+					},
+					FinishReason: finishReason,
+				},
+			},
+		}
+		if containStreamUsage && usage != nil {
+			reconstructed.Usage = *usage
+		}
+
+		if body, err := common.Marshal(reconstructed); err == nil {
+			msg.Body = string(body)
+		}
+	}
 }
 
 func OpenaiHandler(c *gin.Context, info *relaycommon.RelayInfo, resp *http.Response) (*dto.Usage, *types.NewAPIError) {

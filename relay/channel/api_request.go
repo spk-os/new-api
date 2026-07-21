@@ -1,6 +1,7 @@
 package channel
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -474,6 +475,20 @@ func sendPingData(c *gin.Context, mutex *sync.Mutex) error {
 func DoRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	return doRequest(c, req, info)
 }
+
+type streamTrackingBody struct {
+	io.ReadCloser
+	buf *bytes.Buffer
+}
+
+func (s *streamTrackingBody) Read(p []byte) (int, error) {
+	n, err := s.ReadCloser.Read(p)
+	if n > 0 {
+		s.buf.Write(p[:n])
+	}
+	return n, err
+}
+
 func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http.Response, error) {
 	var client *http.Client
 	var err error
@@ -519,9 +534,71 @@ func doRequest(c *gin.Context, req *http.Request, info *common.RelayInfo) (*http
 		c.Set(common2.UpstreamRequestIdKey, upID)
 	}
 
+	captureUpstreamContent(c, req, resp, info)
+
 	_ = req.Body.Close()
 	_ = c.Request.Body.Close()
 	return resp, nil
+}
+
+func captureUpstreamContent(c *gin.Context, req *http.Request, resp *http.Response, info *common.RelayInfo) {
+	if !common2.ContentLogEnabled {
+		return
+	}
+
+	if info.IsStream {
+		var streamBuf bytes.Buffer
+		resp.Body = &streamTrackingBody{ReadCloser: resp.Body, buf: &streamBuf}
+
+		upReqHeaders := make(map[string]string)
+		for k, vv := range req.Header {
+			if len(vv) > 0 {
+				upReqHeaders[k] = strings.Join(vv, "; ")
+			}
+		}
+		upRespHeaders := make(map[string]string)
+		for k, vv := range resp.Header {
+			if len(vv) > 0 {
+				upRespHeaders[k] = strings.Join(vv, "; ")
+			}
+		}
+
+		upstreamReq := service.CaptureUpstreamRequest(req.Method, req.URL.String(), upReqHeaders, "")
+		upstreamResp := service.CaptureUpstreamResponse(resp.StatusCode, upRespHeaders, "")
+		if upRespHeaders != nil {
+			upstreamResp.Headers = upRespHeaders
+		}
+		c.Set("_content_upstream_req", upstreamReq)
+		c.Set("_content_upstream_resp", upstreamResp)
+		c.Set("_content_upstream_body_buf", &streamBuf)
+	} else {
+		bodyBytes, readErr := io.ReadAll(io.LimitReader(resp.Body, 10*1024*1024))
+		_ = resp.Body.Close()
+		resp.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+
+		bodyStr := ""
+		if readErr == nil {
+			bodyStr = string(bodyBytes)
+		}
+
+		upReqHeaders := make(map[string]string)
+		for k, vv := range req.Header {
+			if len(vv) > 0 {
+				upReqHeaders[k] = strings.Join(vv, "; ")
+			}
+		}
+		upRespHeaders := make(map[string]string)
+		for k, vv := range resp.Header {
+			if len(vv) > 0 {
+				upRespHeaders[k] = strings.Join(vv, "; ")
+			}
+		}
+
+		upstreamReq := service.CaptureUpstreamRequest(req.Method, req.URL.String(), upReqHeaders, "")
+		upstreamResp := service.CaptureUpstreamResponse(resp.StatusCode, upRespHeaders, bodyStr)
+		c.Set("_content_upstream_req", upstreamReq)
+		c.Set("_content_upstream_resp", upstreamResp)
+	}
 }
 
 func DoTaskApiRequest(a TaskAdaptor, c *gin.Context, info *common.RelayInfo, requestBody io.Reader) (*http.Response, error) {

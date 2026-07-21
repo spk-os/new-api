@@ -48,6 +48,14 @@ func InitOptionMap() {
 	common.OptionMap["AutomaticDisableChannelEnabled"] = strconv.FormatBool(common.AutomaticDisableChannelEnabled)
 	common.OptionMap["AutomaticEnableChannelEnabled"] = strconv.FormatBool(common.AutomaticEnableChannelEnabled)
 	common.OptionMap["LogConsumeEnabled"] = strconv.FormatBool(common.LogConsumeEnabled)
+	common.OptionMap["ContentLogEnabled"] = strconv.FormatBool(common.ContentLogEnabled)
+	common.OptionMap["ContentLogMaxSizeMB"] = strconv.Itoa(common.ContentLogMaxSizeMB)
+	common.OptionMap["GatewayRoutingEnabled"] = strconv.FormatBool(common.GatewayRoutingEnabled)
+	common.OptionMap["GatewayRoutingConfigPath"] = common.GatewayRoutingConfigPath
+	common.OptionMap["GatewayRoutingConfigYaml"] = common.GatewayRoutingConfigYaml
+	common.OptionMap["GatewayAffinityEnabled"] = strconv.FormatBool(common.GatewayAffinityEnabled)
+	common.OptionMap["GatewayChannelAutoSync"] = strconv.FormatBool(common.GatewayChannelAutoSync)
+	common.OptionMap["GatewayCostSyncEnabled"] = strconv.FormatBool(common.GatewayCostSyncEnabled)
 	common.OptionMap["DisplayInCurrencyEnabled"] = strconv.FormatBool(common.DisplayInCurrencyEnabled)
 	common.OptionMap["DisplayTokenStatEnabled"] = strconv.FormatBool(common.DisplayTokenStatEnabled)
 	common.OptionMap["DrawingEnabled"] = strconv.FormatBool(common.DrawingEnabled)
@@ -314,6 +322,16 @@ func updateOptionMap(key string, value string) (err error) {
 			common.AutomaticEnableChannelEnabled = boolValue
 		case "LogConsumeEnabled":
 			common.LogConsumeEnabled = boolValue
+		case "ContentLogEnabled":
+			common.ContentLogEnabled = boolValue
+		case "GatewayRoutingEnabled":
+			common.GatewayRoutingEnabled = boolValue
+		case "GatewayAffinityEnabled":
+			common.GatewayAffinityEnabled = boolValue
+		case "GatewayChannelAutoSync":
+			common.GatewayChannelAutoSync = boolValue
+		case "GatewayCostSyncEnabled":
+			common.GatewayCostSyncEnabled = boolValue
 		case "DisplayInCurrencyEnabled":
 			// 兼容旧字段：同步到新配置 general_setting.quota_display_type（运行时生效）
 			// true -> USD, false -> TOKENS
@@ -578,6 +596,18 @@ func updateOptionMap(key string, value string) (err error) {
 		// WaffoPayMethods is read directly from OptionMap via setting.GetWaffoPayMethods().
 		// The value is already stored in OptionMap at the top of this function (line: common.OptionMap[key] = value).
 		// No additional in-memory variable to update.
+	case "ContentLogMaxSizeMB":
+		common.ContentLogMaxSizeMB, _ = strconv.Atoi(value)
+	case "GatewayRoutingConfigPath":
+		common.GatewayRoutingConfigPath = value
+	case "GatewayRoutingConfigYaml":
+		common.GatewayRoutingConfigYaml = value
+		if value != "" && common.GatewayConfigReloadHook != nil {
+			if rerr := common.GatewayConfigReloadHook(value); rerr != nil {
+				common.SysError("gateway: hot-reload failed: " + rerr.Error())
+				err = rerr
+			}
+		}
 	}
 	return err
 }

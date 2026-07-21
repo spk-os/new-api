@@ -59,7 +59,7 @@ func RefreshCodexChannelCredential(ctx context.Context, channelID int, opts Code
 		return nil, nil, fmt.Errorf("codex channel: refresh_token is required to refresh credential")
 	}
 
-	refreshCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	refreshCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	res, err := RefreshCodexOAuthTokenWithProxy(refreshCtx, oauthKey.RefreshToken, ch.GetSetting().Proxy)
