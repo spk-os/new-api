@@ -68,6 +68,7 @@ function Section(props: { label: string; icon?: React.ReactNode; children: React
 }
 
 function CopyButton(props: { text: string }) {
+  const { t } = useTranslation()
   const { copiedText, copyToClipboard } = useCopyToClipboard({ notify: false })
   return (
     <Button
@@ -75,8 +76,8 @@ function CopyButton(props: { text: string }) {
       size='sm'
       className='absolute top-1.5 right-1.5 h-5 w-5 p-0'
       onClick={() => copyToClipboard(props.text)}
-      title='Copy to clipboard'
-      aria-label='Copy to clipboard'
+      title={t('Copy to clipboard')}
+      aria-label={t('Copy to clipboard')}
     >
       {copiedText === props.text ? (
         <Check className='size-3 text-green-600' />

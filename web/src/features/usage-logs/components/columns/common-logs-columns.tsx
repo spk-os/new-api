@@ -603,7 +603,27 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
     },
     size: 160,
   })
-  columns.push(
+columns.push({
+    accessorKey: 'client',
+    header: t('Client'),
+    cell: function ClientCell({ row }) {
+      const log = row.original
+      if (!isDisplayableLogType(log.type)) return null
+      const client = log.client
+      if (!client) return null
+      return (
+        <span
+          className='text-muted-foreground max-w-[120px] truncate text-xs'
+          title={client}
+        >
+          {client}
+        </span>
+      )
+    },
+    size: 120,
+    meta: { mobileHidden: true },
+  })
+columns.push(
     {
       accessorKey: 'model_name',
       header: t('Model'),
