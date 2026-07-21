@@ -215,6 +215,7 @@ export function buildApiParams(config: {
     ...(searchParams.upstreamRequestId
       ? { upstream_request_id: String(searchParams.upstreamRequestId) }
       : {}),
+    ...(searchParams.client ? { client: String(searchParams.client) } : {}),
     ...buildTimeRangeParams(searchParams, false),
   }
 
@@ -241,6 +242,9 @@ export function buildApiParams(config: {
           break
         case 'username':
           if (isAdmin) params.username = String(value)
+          break
+        case 'client':
+          params.client = String(value)
           break
       }
     })
