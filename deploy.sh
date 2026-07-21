@@ -6,6 +6,7 @@ NAME="new-api"
 PORT="3500"
 IMAGE="new-api:gateway"
 DATA_DIR="/data"
+LOG_DIR="/root/share/ops/logs/new-api"
 
 usage() {
     echo "Usage: $0 {start|stop|restart|logs|rebuild|status}"
@@ -26,6 +27,7 @@ case "${1:-}" in
         docker run -d --name "$NAME" \
             -p "$PORT:3000" \
             -v "$DATA_DIR:/data" \
+            -v "$LOG_DIR:$LOG_DIR" \
             -e TZ=Asia/Shanghai \
             "$IMAGE"
         echo "[✓] $NAME started on port $PORT"
@@ -46,10 +48,12 @@ case "${1:-}" in
         echo "[*] Rebuilding image..."
         docker stop "$NAME" 2>/dev/null
         docker rm "$NAME" 2>/dev/null
+        mkdir -p "$LOG_DIR"
         cd "$(dirname "$0")" && docker build -t "$IMAGE" . && \
         docker run -d --name "$NAME" \
             -p "$PORT:3000" \
             -v "$DATA_DIR:/data" \
+            -v "$LOG_DIR:$LOG_DIR" \
             -e TZ=Asia/Shanghai \
             "$IMAGE" && \
         echo "[✓] Rebuild & deploy complete on port $PORT"
