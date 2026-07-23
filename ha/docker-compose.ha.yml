@@ -60,11 +60,13 @@ services:
     image: ${GATEWAY_IMAGE:-new-api:gateway}
     container_name: new-api-blue
     restart: always
+    command: --log-dir /app/logs
     ports:
       - "3501:3000"
     volumes:
       - shared_data:/data
       - ./logs/blue:/app/logs
+      - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
       - SQL_DSN=postgresql://postgres:${PG_PASSWORD:-difyai123456}@${PG_HOST:-docker-db_postgres-1}:${PG_PORT:-5432}/${PG_DB:-new-api}
       - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-redis_secure_2026}@new-api-redis:6379
@@ -95,11 +97,13 @@ services:
     image: ${GATEWAY_IMAGE:-new-api:gateway}
     container_name: new-api-green
     restart: always
+    command: --log-dir /app/logs
     ports:
       - "3502:3000"
     volumes:
       - shared_data:/data
       - ./logs/green:/app/logs
+      - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
       - SQL_DSN=postgresql://postgres:${PG_PASSWORD:-difyai123456}@${PG_HOST:-docker-db_postgres-1}:${PG_PORT:-5432}/${PG_DB:-new-api}
       - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-redis_secure_2026}@new-api-redis:6379

@@ -23,11 +23,9 @@ log "  当前活跃: $ACTIVE -> 升级目标: $STANDBY"
 log "  新镜像: $NEW_IMAGE"
 log "═══════════════════════════════════════"
 
-# Step 2: 备份数据库
+# Step 2: 备份数据库（预校验 + dump + 后校验 + 保留策略）
 log "Phase 1: 备份数据库..."
-mkdir -p "$HA_DIR/bak"
-docker exec docker-db_postgres-1 pg_dump -U postgres new-api > "$HA_DIR/bak/pg_dump_$(date +%Y%m%d%H%M%S).sql"
-log "  数据库备份完成 ✓"
+"$SCRIPT_DIR/gateway-backup.sh" || { log "ERROR: 备份失败，升级中止"; exit 1; }
 
 # Step 3: 拉取/构建新镜像
 log "Phase 2: 准备新镜像..."

@@ -15,7 +15,7 @@ mkdir -p "$HA_DIR/logs"
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*" | tee -a "$LOG_FILE"; }
 
 get_active() {
-    grep -oP 'server new-api-\K(blue|green)' "$NGINX_CONF" | head -1
+    grep -oP 'server new-api-\K(blue|green)(?=:\d+;)' "$NGINX_CONF" | head -1
 }
 
 get_standby() {
@@ -102,16 +102,19 @@ cmd_switch() {
     cp "$NGINX_CONF" "${NGINX_CONF}.bak.$(date +%Y%m%d%H%M%S)"
     log "INFO: 已备份 upstream.conf"
 
-    # Step 4: 切换 upstream (在容器内修改，避免 sed -i 破坏 Docker bind mount)
+    # Step 4: 切换 upstream (在宿主机用 sed 输出到临时文件，再用 cat 覆写原文件)
+    # 注意：不能用 sed -i，因为它会创建新 inode，Docker bind mount 不感知
+    # 也不能在容器内用 sed -i，因为 bind mount 文件不允许 rename
+    local TMP_CONF="/tmp/upstream_switch_$$.conf"
     if [[ "$target" == "blue" ]]; then
-        docker exec llm-gateway-nginx sed -i 's/server new-api-green:3000;/server new-api-green:3000 backup;/' /etc/nginx/conf.d/upstream.conf
-        docker exec llm-gateway-nginx sed -i 's/server new-api-blue:3000 backup;/server new-api-blue:3000;/' /etc/nginx/conf.d/upstream.conf
+        sed 's/server new-api-green:3000;/server new-api-green:3000 backup;/' "$NGINX_CONF" \
+            | sed 's/server new-api-blue:3000 backup;/server new-api-blue:3000;/' > "$TMP_CONF"
     else
-        docker exec llm-gateway-nginx sed -i 's/server new-api-blue:3000;/server new-api-blue:3000 backup;/' /etc/nginx/conf.d/upstream.conf
-        docker exec llm-gateway-nginx sed -i 's/server new-api-green:3000 backup;/server new-api-green:3000;/' /etc/nginx/conf.d/upstream.conf
+        sed 's/server new-api-blue:3000;/server new-api-blue:3000 backup;/' "$NGINX_CONF" \
+            | sed 's/server new-api-green:3000 backup;/server new-api-green:3000;/' > "$TMP_CONF"
     fi
-    # 同步 host 文件 (用 cp 从容器复制回来，保持 bind mount inode 一致)
-    docker cp llm-gateway-nginx:/etc/nginx/conf.d/upstream.conf "$NGINX_CONF"
+    cat "$TMP_CONF" > "$NGINX_CONF"
+    rm -f "$TMP_CONF"
     log "INFO: 已修改 upstream.conf -> $target"
 
     # Step 5: Reload Nginx
