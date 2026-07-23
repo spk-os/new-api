@@ -2,6 +2,7 @@ package service
 
 import (
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/QuantumNous/new-api/common"
@@ -89,6 +90,18 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 	userGroup := common.GetContextKeyString(param.Ctx, constant.ContextKeyUserGroup)
 	excludeChannelIds := parseExcludeChannelIds(param.Ctx)
 
+	// Build combined exclude list: tried channels + channels in cooldown
+	cooldownIds := GetCooldownChannelIds()
+	var allExcludeIds []int
+	if len(cooldownIds) > 0 {
+		allExcludeIds = make([]int, 0, len(excludeChannelIds)+len(cooldownIds))
+		allExcludeIds = append(allExcludeIds, excludeChannelIds...)
+		allExcludeIds = append(allExcludeIds, cooldownIds...)
+		logger.LogDebug(param.Ctx, fmt.Sprintf("排除冷却渠道: %v", cooldownIds))
+	} else {
+		allExcludeIds = excludeChannelIds
+	}
+
 	if param.TokenGroup == "auto" {
 		if len(setting.GetAutoGroups()) == 0 {
 			return nil, selectGroup, errors.New("auto groups is not enabled")
@@ -118,7 +131,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			}
 			logger.LogDebug(param.Ctx, "Auto selecting group: %s, priorityRetry: %d", autoGroup, priorityRetry)
 
-			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, excludeChannelIds)
+			channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, allExcludeIds)
+			if channel == nil && len(cooldownIds) > 0 {
+				channel, _ = model.GetRandomSatisfiedChannel(autoGroup, param.ModelName, priorityRetry, param.RequestPath, excludeChannelIds)
+			}
 			if channel == nil {
 				// Current group has no available channel for this model, try next group
 				// 当前分组没有该模型的可用渠道，尝试下一个分组
@@ -156,7 +172,10 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			break
 		}
 	} else {
-		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, excludeChannelIds)
+		channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, allExcludeIds)
+		if channel == nil && len(cooldownIds) > 0 {
+			channel, err = model.GetRandomSatisfiedChannel(param.TokenGroup, param.ModelName, param.GetRetry(), param.RequestPath, excludeChannelIds)
+		}
 		if err != nil {
 			return nil, param.TokenGroup, err
 		}
