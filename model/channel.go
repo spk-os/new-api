@@ -190,21 +190,16 @@ func (channel *Channel) GetKeys() []string {
 			return res
 		}
 	}
-	// Split by comma (primary) and newline (backward compatibility)
-	rawKeys := strings.FieldsFunc(trimmed, func(r rune) bool {
-		return r == ',' || r == '\n'
-	})
-	result := make([]string, 0, len(rawKeys))
-	for _, k := range rawKeys {
-		k = strings.TrimSpace(k)
-		if k != "" {
-			result = append(result, k)
-		}
-	}
-	return result
+	// Split by newline only (original behavior)
+	keys := strings.Split(strings.Trim(channel.Key, "\n"), "\n")
+	return keys
 }
 
 func (channel *Channel) GetNextEnabledKey() (string, int, *types.NewAPIError) {
+	if !channel.ChannelInfo.IsMultiKey {
+		return channel.Key, 0, nil
+	}
+
 	keys := channel.GetKeys()
 	if len(keys) == 0 {
 		return "", 0, types.NewError(errors.New("no keys available"), types.ErrorCodeChannelNoAvailableKey)

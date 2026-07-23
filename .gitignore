@@ -39,3 +39,10 @@ skills-lock.json
 .local-tests/
 service/relayconvert/chat_responses_live_local_test.go
 service/openaicompat/chat_responses_live_local_test.go
+
+# HA deployment secrets, backups, and runtime logs
+ha/.env.ha
+ha/bak/
+ha/logs/
+ha/nginx/logs/
+ha/nginx/*.bak.*
