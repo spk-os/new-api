@@ -189,14 +189,59 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	relayInfo.RetryIndex = 0
 	relayInfo.LastError = nil
 
+	var lastChannelId int
+	var lastKeyIndex int
+	var lastChannelName string
+	var triedKeyIndices map[int]bool
+
 	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
-		channel, channelErr := getChannel(c, relayInfo, retryParam)
+
+		var channel *model.Channel
+		var channelErr *types.NewAPIError
+
+		if lastChannelId > 0 && newAPIError != nil {
+			sameChannel, cacheErr := model.CacheGetChannel(lastChannelId)
+
+			if cacheErr == nil && sameChannel != nil {
+				allTried := triedKeyIndices != nil && len(triedKeyIndices) >= len(sameChannel.GetKeys())
+
+				if !allTried && sameChannel.HasMoreEnabledKeys(lastKeyIndex) {
+					newIdx, advanced := sameChannel.AdvanceToNextKey(lastKeyIndex)
+					if advanced {
+						logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) key switch: index %d -> %d, reason: status %d",
+							retryParam.GetRetry(), common.RetryTimes, lastChannelId, lastChannelName, lastKeyIndex, newIdx, newAPIError.StatusCode))
+						setupErr := middleware.SetupContextForSelectedChannel(c, sameChannel, relayInfo.OriginModelName)
+						if setupErr != nil {
+							channel, channelErr = getChannel(c, relayInfo, retryParam)
+							triedKeyIndices = make(map[int]bool)
+						} else {
+							channel = sameChannel
+						}
+					}
+				}
+			}
+			if channel == nil && channelErr == nil {
+				logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) all keys exhausted, trying different channel",
+					retryParam.GetRetry(), common.RetryTimes, lastChannelId, lastChannelName))
+				channel, channelErr = getChannel(c, relayInfo, retryParam)
+				triedKeyIndices = make(map[int]bool)
+			}
+		} else {
+			channel, channelErr = getChannel(c, relayInfo, retryParam)
+			triedKeyIndices = make(map[int]bool)
+		}
+
 		if channelErr != nil {
 			logger.LogError(c, channelErr.Error())
 			newAPIError = channelErr
 			break
 		}
+
+		lastChannelId = channel.Id
+		lastChannelName = channel.Name
+		lastKeyIndex = common.GetContextKeyInt(c, constant.ContextKeyChannelMultiKeyIndex)
+		triedKeyIndices[lastKeyIndex] = true
 
 		addUsedChannel(c, channel.Id)
 		bodyStorage, bodyErr := common.GetBodyStorage(c)
@@ -342,7 +387,11 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
-		return false
+		// Gateway-locked channels should allow retry to switch providers.
+		// Token-prefix specified channels (sk-channel_xxx) should not retry.
+		if _, gwOk := common.GetContextKey(c, constant.ContextKeyGatewayLockedChannelId); !gwOk {
+			return false
+		}
 	}
 	code := openaiErr.StatusCode
 	if code >= 200 && code < 300 {
@@ -627,7 +676,11 @@ func shouldRetryTaskRelay(c *gin.Context, channelId int, taskErr *dto.TaskError,
 		return false
 	}
 	if _, ok := c.Get("specific_channel_id"); ok {
-		return false
+		// Gateway-locked channels should allow retry to switch providers.
+		// Token-prefix specified channels (sk-channel_xxx) should not retry.
+		if _, gwOk := common.GetContextKey(c, constant.ContextKeyGatewayLockedChannelId); !gwOk {
+			return false
+		}
 	}
 	if taskErr.StatusCode == http.StatusTooManyRequests {
 		return true
