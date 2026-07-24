@@ -391,6 +391,11 @@ func InitGatewayConfig() {
 			return nil
 		}
 	}
+	// Wire up the client ID resolver so model/log.go can map User-Agent
+	// strings to friendly client names without importing gateway directly.
+	if common.ClientIDResolver == nil {
+		common.ClientIDResolver = ResolveClientID
+	}
 	cfg, err := LoadConfig()
 	if err != nil {
 		common.SysError("gateway config init: " + err.Error())

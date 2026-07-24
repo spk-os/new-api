@@ -366,6 +366,9 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if client == "" {
 		client = "unknown"
 	}
+	if common.ClientIDResolver != nil {
+		client = common.ClientIDResolver(client)
+	}
 	if len(client) > 128 {
 		client = client[:128]
 	}

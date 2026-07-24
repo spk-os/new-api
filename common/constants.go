@@ -106,6 +106,11 @@ var GatewayCostSyncEnabled = false
 // hot-reload of YAML config from the options table without an import cycle.
 var GatewayConfigReloadHook func(yaml string) error
 
+// ClientIDResolver maps a raw User-Agent / X-Agent-Name string to a friendly
+// client ID using the gateway routing config's log.client_id patterns. Set by
+// the gateway package at init to avoid an import cycle from model → gateway.
+var ClientIDResolver func(userAgent string) string
+
 var TLSInsecureSkipVerify bool
 var InsecureTLSConfig = &tls.Config{InsecureSkipVerify: true}
 

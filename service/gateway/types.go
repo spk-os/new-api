@@ -18,6 +18,7 @@ type StrategyGroup struct {
 	LLMCommon *LLMCommon               `yaml:"llmCommon"`
 	Affinity  *AffinityConfig          `yaml:"affinity"`
 	Routing   *RoutingConfig           `yaml:"routing"`
+	Log       *LogConfig                `yaml:"log"`
 	Client    map[string]*ClientPolicy `yaml:"client"` // key=clientId
 }
 
@@ -135,6 +136,16 @@ type RoutingConfig struct {
 // ModelSelection - strategy for choosing models.
 type ModelSelection struct {
 	Strategy string `yaml:"strategy"` // priority | cost
+}
+
+// LogConfig - log-related configuration (per strategy group).
+type LogConfig struct {
+	// ClientIDMap maps a friendly client name to a wildcard pattern.
+	// The pattern supports `*` wildcards and is matched as a substring
+	// (contains) against the request's User-Agent / X-Agent-Name.
+	// Example: "Claude-Desktop": "Claude/*Chrome" matches any UA
+	// containing "Claude/<anything>Chrome".
+	ClientIDMap map[string]string `yaml:"client_id"`
 }
 
 // ClientPolicy - client-specific overrides.
