@@ -45,6 +45,7 @@ type textQuotaSummary struct {
 	CacheCreationRatio1h     float64
 	Quota                    int
 	IsClaudeUsageSemantic    bool
+	IsLegacyClaudeDerived    bool
 	UsageSemantic            string
 	WebSearchPrice           float64
 	WebSearchCallCount       int
@@ -214,6 +215,7 @@ func calculateTextQuotaSummary(ctx *gin.Context, relayInfo *relaycommon.RelayInf
 	summary.ImageTokens = usage.PromptTokensDetails.ImageTokens
 	summary.AudioTokens = usage.PromptTokensDetails.AudioTokens
 	legacyClaudeDerived := isLegacyClaudeDerivedOpenAIUsage(relayInfo, usage)
+	summary.IsLegacyClaudeDerived = legacyClaudeDerived
 	isOpenRouterClaudeBilling := relayInfo.ChannelMeta != nil &&
 		relayInfo.ChannelType == constant.ChannelTypeOpenRouter &&
 		summary.IsClaudeUsageSemantic
@@ -492,10 +494,25 @@ func PostTextConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, us
 		other["upstream_response_body"] = respBody
 	}
 
+	// Normalize: ensure PromptTokens excludes cache tokens so that
+	// TokenUsed = PromptTokens + CompletionTokens + CacheTokens is correct.
+	// - OpenAI native: PromptTokens includes cache → subtract it
+	// - Claude native: PromptTokens already excludes cache → no change
+	// - OpenRouter Claude: PromptTokens already subtracted at line 222 → no change
+	// - Legacy Claude-derived: PromptTokens already excludes cache → no change
+	if !summary.IsClaudeUsageSemantic && !summary.IsLegacyClaudeDerived && summary.CacheTokens > 0 {
+		if summary.PromptTokens >= summary.CacheTokens {
+			summary.PromptTokens -= summary.CacheTokens
+		} else {
+			summary.PromptTokens = 0
+		}
+	}
+
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
 		PromptTokens:     summary.PromptTokens,
 		CompletionTokens: summary.CompletionTokens,
+		CacheTokens:      summary.CacheTokens,
 		ModelName:        logModel,
 		TokenName:        summary.TokenName,
 		Quota:            summary.Quota,

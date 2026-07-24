@@ -242,10 +242,16 @@ func PostWssConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, mod
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	wssCacheTokens := usage.InputTokenDetails.CachedTokens
+	wssPromptTokens := usage.InputTokens
+	if wssCacheTokens > 0 && wssPromptTokens > wssCacheTokens {
+		wssPromptTokens -= wssCacheTokens
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
-		PromptTokens:     usage.InputTokens,
+		PromptTokens:     wssPromptTokens,
 		CompletionTokens: usage.OutputTokens,
+		CacheTokens:      wssCacheTokens,
 		ModelName:        logModel,
 		TokenName:        tokenName,
 		Quota:            quota,
@@ -365,10 +371,16 @@ func PostAudioConsumeQuota(ctx *gin.Context, relayInfo *relaycommon.RelayInfo, u
 		InjectTieredBillingInfo(other, relayInfo, tieredResult)
 	}
 	attachQuotaSaturation(ctx, relayInfo, other)
+	audioCacheTokens := usage.PromptTokensDetails.CachedTokens
+	audioPromptTokens := usage.PromptTokens
+	if audioCacheTokens > 0 && audioPromptTokens > audioCacheTokens {
+		audioPromptTokens -= audioCacheTokens
+	}
 	model.RecordConsumeLog(ctx, relayInfo.UserId, model.RecordConsumeLogParams{
 		ChannelId:        relayInfo.ChannelId,
-		PromptTokens:     usage.PromptTokens,
+		PromptTokens:     audioPromptTokens,
 		CompletionTokens: usage.CompletionTokens,
+		CacheTokens:      audioCacheTokens,
 		ModelName:        logModel,
 		TokenName:        tokenName,
 		Quota:            quota,
