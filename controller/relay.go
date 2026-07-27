@@ -194,36 +194,55 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	var lastChannelName string
 	var triedKeyIndices map[int]bool
 
-	for ; retryParam.GetRetry() <= common.RetryTimes; retryParam.IncreaseRetry() {
+	gwPlan := gateway.GetGatewayPlanFromContext(c)
+	effectiveMaxRetries := common.RetryTimes
+	if gwPlan != nil {
+		if gwMax := gateway.GetMaxRetries(gwPlan); gwMax > 0 {
+			effectiveMaxRetries = gwMax
+		}
+	}
+
+	// Suppress per-attempt error logs and failed consume logs during the retry
+	// loop. Instead, collect retry history in the context and create ONE
+	// consolidated log entry after the loop exits (success or failure).
+	setRetryLogSuppression(c, true)
+
+	for ; retryParam.GetRetry() <= effectiveMaxRetries; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 
 		var channel *model.Channel
 		var channelErr *types.NewAPIError
 
 		if lastChannelId > 0 && newAPIError != nil {
-			sameChannel, cacheErr := model.CacheGetChannel(lastChannelId)
+			if gateway.ShouldRetryByKey(gwPlan) {
+				sameChannel, cacheErr := model.CacheGetChannel(lastChannelId)
 
-			if cacheErr == nil && sameChannel != nil {
-				allTried := triedKeyIndices != nil && len(triedKeyIndices) >= len(sameChannel.GetKeys())
+				if cacheErr == nil && sameChannel != nil {
+					allTried := triedKeyIndices != nil && len(triedKeyIndices) >= len(sameChannel.GetKeys())
 
-				if !allTried && sameChannel.HasMoreEnabledKeys(lastKeyIndex) {
-					newIdx, advanced := sameChannel.AdvanceToNextKey(lastKeyIndex)
-					if advanced {
-						logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) key switch: index %d -> %d, reason: status %d",
-							retryParam.GetRetry(), common.RetryTimes, lastChannelId, lastChannelName, lastKeyIndex, newIdx, newAPIError.StatusCode))
-						setupErr := middleware.SetupContextForSelectedChannel(c, sameChannel, relayInfo.OriginModelName)
-						if setupErr != nil {
-							channel, channelErr = getChannel(c, relayInfo, retryParam)
-							triedKeyIndices = make(map[int]bool)
-						} else {
-							channel = sameChannel
+					if !allTried && sameChannel.HasMoreEnabledKeys(lastKeyIndex) {
+						newIdx, advanced := sameChannel.AdvanceToNextKey(lastKeyIndex)
+						if advanced {
+							logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) key switch: index %d -> %d, reason: status %d",
+								retryParam.GetRetry(), effectiveMaxRetries, lastChannelId, lastChannelName, lastKeyIndex, newIdx, newAPIError.StatusCode))
+							setupErr := middleware.SetupContextForSelectedChannel(c, sameChannel, relayInfo.OriginModelName)
+							if setupErr != nil {
+								channel, channelErr = getChannel(c, relayInfo, retryParam)
+								triedKeyIndices = make(map[int]bool)
+							} else {
+								channel = sameChannel
+							}
 						}
 					}
 				}
 			}
 			if channel == nil && channelErr == nil {
 				logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) all keys exhausted, trying different channel",
-					retryParam.GetRetry(), common.RetryTimes, lastChannelId, lastChannelName))
+					retryParam.GetRetry(), effectiveMaxRetries, lastChannelId, lastChannelName))
+				if delay := gateway.GetProviderSwitchDelay(gwPlan); delay > 0 {
+					logger.LogInfo(c, fmt.Sprintf("retry %d/%d: provider switch delay %v", retryParam.GetRetry(), effectiveMaxRetries, delay))
+					time.Sleep(delay)
+				}
 				channel, channelErr = getChannel(c, relayInfo, retryParam)
 				triedKeyIndices = make(map[int]bool)
 			}
@@ -278,10 +297,14 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		processChannelError(c, *types.NewChannelError(channel.Id, channel.Type, channel.Name, channel.ChannelInfo.IsMultiKey, common.GetContextKeyString(c, constant.ContextKeyChannelKey), channel.GetAutoBan()), newAPIError)
 
-		recordFailedConsumeLog(c, relayInfo, channel, newAPIError)
+		appendRetryAttempt(c, relayInfo, channel, newAPIError)
 
-		if !shouldRetry(c, newAPIError, common.RetryTimes-retryParam.GetRetry()) {
+		if !shouldRetry(c, newAPIError, effectiveMaxRetries-retryParam.GetRetry()) {
 			break
+		}
+		if backoff := gateway.GetBackoffInterval(gwPlan, retryParam.GetRetry()); backoff > 0 {
+			logger.LogInfo(c, fmt.Sprintf("retry %d/%d: backoff %v before next attempt", retryParam.GetRetry(), effectiveMaxRetries, backoff))
+			time.Sleep(backoff)
 		}
 	}
 
@@ -291,6 +314,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		logger.LogInfo(c, retryLogStr)
 	}
 	if newAPIError != nil {
+		recordConsolidatedFailedLog(c, relayInfo)
 		gopool.Go(func() {
 			perfmetrics.RecordRelaySample(relayInfo, false, 0)
 		})
@@ -401,6 +425,12 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if code < 100 || code > 599 {
 		return true
 	}
+	// Gateway retry config takes precedence when a plan exists.
+	if plan := gateway.GetGatewayPlanFromContext(c); plan != nil {
+		if retryable, decided := gateway.ShouldRetryWithGatewayConfig(plan, code); decided {
+			return retryable
+		}
+	}
 	if operation_setting.IsAlwaysSkipRetryCode(openaiErr.GetErrorCode()) {
 		return false
 	}
@@ -410,6 +440,7 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 func processChannelError(c *gin.Context, channelError types.ChannelError, err *types.NewAPIError) {
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	service.RecordChannelFailure(channelError.ChannelId, err.StatusCode)
+	gateway.RecordProviderFailureForChannel(c, channelError.ChannelId)
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {
@@ -418,7 +449,7 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 		})
 	}
 
-	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) {
+	if constant.ErrorLogEnabled && types.IsRecordErrorLog(err) && !isRetryLogSuppressed(c) {
 		// 保存错误日志到mysql中
 		userId := c.GetInt("id")
 		tokenName := c.GetString("token_name")

@@ -351,6 +351,17 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	requestId := c.GetString(common.RequestIdKey)
 	upstreamRequestId := c.GetString(common.UpstreamRequestIdKey)
 	createdAt := common.GetTimestamp()
+	if attemptsVal, exists := c.Get("_retry_attempts"); exists {
+		if attempts, ok := attemptsVal.([]map[string]interface{}); ok && len(attempts) > 0 {
+			if params.Other == nil {
+				params.Other = make(map[string]interface{})
+			}
+			if _, hasRetry := params.Other["retry_attempts"]; !hasRetry {
+				params.Other["retry_attempts"] = attempts
+				params.Other["retry_count"] = len(attempts)
+			}
+		}
+	}
 	otherStr := common.MapToJsonStr(params.Other)
 	// 判断是否需要记录 IP
 	needRecordIp := false
