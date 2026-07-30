@@ -307,7 +307,87 @@ func CacheUpdateChannelStatus(id int, status int) {
 				}
 			}
 		}
+	} else {
+		// re-add the channel to group2model2channels when it is enabled
+		channel, ok := channelsIDM[id]
+		if !ok {
+			return
+		}
+		groups := strings.Split(channel.Group, ",")
+		for _, group := range groups {
+			models := strings.Split(channel.Models, ",")
+			for _, model := range models {
+				if _, ok := group2model2channels[group]; !ok {
+					group2model2channels[group] = make(map[string][]int)
+				}
+				if _, ok := group2model2channels[group][model]; !ok {
+					group2model2channels[group][model] = make([]int, 0)
+				}
+				found := false
+				for _, channelId := range group2model2channels[group][model] {
+					if channelId == id {
+						found = true
+						break
+					}
+				}
+				if !found {
+					group2model2channels[group][model] = append(group2model2channels[group][model], id)
+					// re-sort by priority (descending)
+					sort.Slice(group2model2channels[group][model], func(i, j int) bool {
+						ci := channelsIDM[group2model2channels[group][model][i]]
+						cj := channelsIDM[group2model2channels[group][model][j]]
+						if ci == nil || cj == nil {
+							return false
+						}
+						return ci.GetPriority() > cj.GetPriority()
+					})
+				}
+			}
+		}
 	}
+}
+
+// CacheGetAnyChannelForModel searches channelsIDM for any auto-disabled channel
+// that serves the given model in the given group. Returns a randomly selected
+// matching channel, or nil if none found. Only channels with status
+// ChannelStatusAutoDisabled are considered — manually disabled channels are
+// respected and never auto-recovered.
+func CacheGetAnyChannelForModel(group string, model string) *Channel {
+	if !common.MemoryCacheEnabled {
+		return nil
+	}
+	channelSyncLock.RLock()
+	defer channelSyncLock.RUnlock()
+
+	var candidates []*Channel
+	for _, channel := range channelsIDM {
+		if channel.Status != common.ChannelStatusAutoDisabled {
+			continue // only auto-disabled channels are candidates for recovery
+		}
+		// check if channel serves this group
+		groups := strings.Split(channel.Group, ",")
+		groupMatch := false
+		for _, g := range groups {
+			if g == group {
+				groupMatch = true
+				break
+			}
+		}
+		if !groupMatch {
+			continue
+		}
+		models := strings.Split(channel.Models, ",")
+		for _, m := range models {
+			if m == model {
+				candidates = append(candidates, channel)
+				break
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil
+	}
+	return candidates[rand.Intn(len(candidates))]
 }
 
 func CacheUpdateChannel(channel *Channel) {

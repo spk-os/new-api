@@ -136,6 +136,15 @@ func RecordChannelSuccess(channelId int) {
 	channelCooldownMap.Delete(channelId)
 }
 
+// ClearChannelCooldown removes all failure and cooldown state for a channel.
+// Used when a channel is auto-recovered as a last-resort fallback.
+func ClearChannelCooldown(channelId int) {
+	if channelId <= 0 {
+		return
+	}
+	channelCooldownMap.Delete(channelId)
+}
+
 // GetCooldownChannelIds returns the IDs of all channels currently in cooldown.
 func GetCooldownChannelIds() []int {
 	now := channelNowFunc()

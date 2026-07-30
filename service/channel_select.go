@@ -180,6 +180,27 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			return nil, param.TokenGroup, err
 		}
 	}
+
+	if channel == nil {
+		var groupsToTry []string
+		if param.TokenGroup == "auto" {
+			groupsToTry = GetUserAutoGroup(userGroup)
+		} else {
+			groupsToTry = []string{param.TokenGroup}
+		}
+		for _, g := range groupsToTry {
+			disabledChannel := model.CacheGetAnyChannelForModel(g, param.ModelName)
+			if disabledChannel != nil {
+				model.UpdateChannelStatus(disabledChannel.Id, "", common.ChannelStatusEnabled, "auto-recovered: last-resort fallback")
+				ClearChannelCooldown(disabledChannel.Id)
+				common.SysLog(fmt.Sprintf("渠道 #%d 自动恢复（最后手段）：分组 %s 模型 %s 无可用渠道", disabledChannel.Id, g, param.ModelName))
+				channel = disabledChannel
+				selectGroup = g
+				break
+			}
+		}
+	}
+
 	return channel, selectGroup, nil
 }
 
