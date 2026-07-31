@@ -189,12 +189,17 @@ func CacheGetRandomSatisfiedChannel(param *RetryParam) (*model.Channel, string, 
 			groupsToTry = []string{param.TokenGroup}
 		}
 		for _, g := range groupsToTry {
-			disabledChannel := model.CacheGetAnyChannelForModel(g, param.ModelName)
-			if disabledChannel != nil {
-				model.UpdateChannelStatus(disabledChannel.Id, "", common.ChannelStatusEnabled, "auto-recovered: last-resort fallback")
-				ClearChannelCooldown(disabledChannel.Id)
-				common.SysLog(fmt.Sprintf("渠道 #%d 自动恢复（最后手段）：分组 %s 模型 %s 无可用渠道", disabledChannel.Id, g, param.ModelName))
-				channel = disabledChannel
+			fallbackChannel := model.CacheGetAnyChannelForModel(g, param.ModelName)
+			if fallbackChannel != nil {
+				// Only re-enable if the channel was auto-disabled; enabled
+				// channels just need their cooldown cleared so they can be
+				// retried on the same model.
+				if fallbackChannel.Status != common.ChannelStatusEnabled {
+					model.UpdateChannelStatus(fallbackChannel.Id, "", common.ChannelStatusEnabled, "auto-recovered: last-resort fallback")
+				}
+				ClearChannelCooldown(fallbackChannel.Id)
+				common.SysLog(fmt.Sprintf("渠道 #%d 最后手段恢复：分组 %s 模型 %s 无可用渠道，重试已用渠道", fallbackChannel.Id, g, param.ModelName))
+				channel = fallbackChannel
 				selectGroup = g
 				break
 			}

@@ -347,11 +347,19 @@ func CacheUpdateChannelStatus(id int, status int) {
 	}
 }
 
-// CacheGetAnyChannelForModel searches channelsIDM for any auto-disabled channel
-// that serves the given model in the given group. Returns a randomly selected
-// matching channel, or nil if none found. Only channels with status
-// ChannelStatusAutoDisabled are considered — manually disabled channels are
-// respected and never auto-recovered.
+// CacheGetAnyChannelForModel searches channelsIDM for any channel that serves
+// the given model in the given group, for last-resort recovery when normal
+// selection returns nil (all channels exhausted/tried/in cooldown).
+//
+// It scans in two passes:
+//  1. Auto-disabled channels (status=ChannelStatusAutoDisabled) — preferred
+//     because they need re-enabling.
+//  2. Enabled channels (status=ChannelStatusEnabled) — returned only when no
+//     auto-disabled channel matches. These are channels that are enabled but
+//     in cooldown or already tried; the caller clears their cooldown so they
+//     can be retried on the same model.
+//
+// Manually disabled channels are respected and never auto-recovered.
 func CacheGetAnyChannelForModel(group string, model string) *Channel {
 	if !common.MemoryCacheEnabled {
 		return nil
@@ -359,10 +367,11 @@ func CacheGetAnyChannelForModel(group string, model string) *Channel {
 	channelSyncLock.RLock()
 	defer channelSyncLock.RUnlock()
 
-	var candidates []*Channel
+	var autoDisabledCandidates []*Channel
+	var enabledCandidates []*Channel
 	for _, channel := range channelsIDM {
-		if channel.Status != common.ChannelStatusAutoDisabled {
-			continue // only auto-disabled channels are candidates for recovery
+		if channel.Status == common.ChannelStatusManuallyDisabled {
+			continue // never auto-recover manually disabled channels
 		}
 		// check if channel serves this group
 		groups := strings.Split(channel.Group, ",")
@@ -379,15 +388,24 @@ func CacheGetAnyChannelForModel(group string, model string) *Channel {
 		models := strings.Split(channel.Models, ",")
 		for _, m := range models {
 			if m == model {
-				candidates = append(candidates, channel)
+				if channel.Status == common.ChannelStatusAutoDisabled {
+					autoDisabledCandidates = append(autoDisabledCandidates, channel)
+				} else if channel.Status == common.ChannelStatusEnabled {
+					enabledCandidates = append(enabledCandidates, channel)
+				}
 				break
 			}
 		}
 	}
-	if len(candidates) == 0 {
-		return nil
+	// Prefer auto-disabled channels (they need re-enabling)
+	if len(autoDisabledCandidates) > 0 {
+		return autoDisabledCandidates[rand.Intn(len(autoDisabledCandidates))]
 	}
-	return candidates[rand.Intn(len(candidates))]
+	// Last resort: return enabled channels (they just need cooldown cleared)
+	if len(enabledCandidates) > 0 {
+		return enabledCandidates[rand.Intn(len(enabledCandidates))]
+	}
+	return nil
 }
 
 func CacheUpdateChannel(channel *Channel) {
