@@ -88,34 +88,57 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	return nil
 }
 
-// Claude Code 官方 system prompt 首句是精确指纹：上游风控对以该句开头的
-// 请求逐字匹配并拒绝（400 code 11128 Illegal API invocation from an
-// unapproved channel）。2026-10-15 实测：部分子串、句中位置或前导换行均
-// 不触发，仅 system 开头完整连续出现才拦。转发时把首处改写为中性描述。
+// Claude Code 官方 system prompt 首句是精确指纹：上游风控围绕该句拦截
+// （400 code 11128 Illegal API invocation from an unapproved channel）。
+// 实测还发现 system 中的 Anthropic 官方遥测头块（x-anthropic-billing-header:
+// cc_version=...; cc_entrypoint=...;）同样单独触发拦截——两道指纹缺一即过，
+// 同时存在均拦。Claude 格式入站的 system 常是多块数组，经通用 Claude→OpenAI
+// 转换后按块顺序直接拼接成单条 string（to_oai_chat_req.go），指纹可能出现在
+// 任意位置（CC 2.1.299.120 首块是 billing-header，指纹句在第二块）。
+// 转发时清除全部 x-anthropic-* 遥测头并把指纹句改写为中性描述——遥测头对
+// 模型无语义，指纹句改写语义等价，其他客户端几乎不可能携带，无副作用。
 const claudeCodeSystemFingerprint = "You are Claude Code, Anthropic's official CLI for Claude."
 const claudeCodeSystemReplacement = "You are a CLI coding agent."
+const anthropicTelemetryHeaderPrefix = "x-anthropic-"
 
-// sanitizeClaudeCodeSystem 改写 system 消息开头的 Claude Code 官方指纹句；
-// 句中或非起始位置出现不影响（上游仅匹配开头，无需改写）。
-// Content 兼容字符串与 multimodal 数组两种形态，其余形态原样保留。
+// sanitizeClaudeCodeSystem 清除 system 消息中的 Anthropic 官方遥测头行并改写
+// 所有出现的 Claude Code 官方指纹句。Content 兼容字符串与 multimodal 数组
+// 两种形态，其余形态原样保留。
 func sanitizeClaudeCodeSystem(msg *dto.Message) {
-	replaceLeading := func(s string) string {
-		if strings.HasPrefix(s, claudeCodeSystemFingerprint) {
-			return claudeCodeSystemReplacement + strings.TrimPrefix(s, claudeCodeSystemFingerprint)
-		}
+	replace := func(s string) string {
+		s = strings.ReplaceAll(s, claudeCodeSystemFingerprint, claudeCodeSystemReplacement)
 		return s
 	}
 	switch v := msg.Content.(type) {
 	case string:
-		msg.Content = replaceLeading(v)
+		msg.Content = replace(dropTelemetryLines(v))
 	case []dto.MediaContent:
-		for i := range v {
-			if v[i].Type == "text" {
-				v[i].Text = replaceLeading(v[i].Text)
-				break
+		blocks := v[:0]
+		for _, b := range v {
+			if b.Type == "text" {
+				if strings.HasPrefix(b.Text, anthropicTelemetryHeaderPrefix) {
+					continue // 遥测头块整体丢弃
+				}
+				b.Text = replace(b.Text)
 			}
+			blocks = append(blocks, b)
 		}
+		msg.Content = blocks
 	}
+}
+
+// dropTelemetryLines 删除字符串中 x-anthropic-* 开头的行（多块 system 拼接
+// 成单条 string 后，遥测头块退化为行首片段）。
+func dropTelemetryLines(s string) string {
+	lines := strings.Split(s, "\n")
+	kept := lines[:0]
+	for _, line := range lines {
+		if strings.HasPrefix(line, anthropicTelemetryHeaderPrefix) {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 // applyChatRules 应用 workbuddy body 约束（通用转换之后、发往上游之前）。
