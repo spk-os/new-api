@@ -20,9 +20,9 @@ type QuotaData struct {
 	TokenID   int    `json:"token_id" gorm:"index;default:0"`
 	ChannelID int    `json:"channel_id" gorm:"index;default:0"`
 	NodeName  string `json:"node_name" gorm:"index;size:64;default:''"`
-	TokenUsed       int    `json:"token_used" gorm:"default:0"`
-	Count           int    `json:"count" gorm:"default:0"`
-	Quota           int    `json:"quota" gorm:"default:0"`
+	TokenUsed int    `json:"token_used" gorm:"default:0"`
+	Count     int    `json:"count" gorm:"default:0"`
+	Quota     int    `json:"quota" gorm:"default:0"`
 	// PromptTokens / CompletionTokens / CacheTokens break the per-model token
 	// total into its input/output/cache components so the dashboard ranking bar
 	// can be stacked by segment. AutoMigrate adds the columns on all three DBs;
@@ -95,20 +95,20 @@ func LogQuotaData(params QuotaDataLogParams) {
 	// 只精确到小时
 	createdAt := params.CreatedAt - (params.CreatedAt % 3600)
 	quotaData := &QuotaData{
-		UserID:    params.UserID,
-		Username:  params.Username,
-		ModelName: params.ModelName,
-		CreatedAt: createdAt,
-		UseGroup:  params.UseGroup,
-		TokenID:   params.TokenID,
-		ChannelID: params.ChannelID,
-		NodeName:  params.NodeName,
-		Count:           1,
-		Quota:           params.Quota,
-		TokenUsed:       params.TokenUsed,
-		PromptTokens:    params.PromptTokens,
+		UserID:           params.UserID,
+		Username:         params.Username,
+		ModelName:        params.ModelName,
+		CreatedAt:        createdAt,
+		UseGroup:         params.UseGroup,
+		TokenID:          params.TokenID,
+		ChannelID:        params.ChannelID,
+		NodeName:         params.NodeName,
+		Count:            1,
+		Quota:            params.Quota,
+		TokenUsed:        params.TokenUsed,
+		PromptTokens:     params.PromptTokens,
 		CompletionTokens: params.CompletionTokens,
-		CacheTokens:     params.CacheTokens,
+		CacheTokens:      params.CacheTokens,
 	}
 
 	CacheQuotaDataLock.Lock()
@@ -148,12 +148,12 @@ func increaseQuotaData(quotaData *QuotaData) {
 		Where("user_id = ? and username = ? and model_name = ? and created_at = ? and use_group = ? and token_id = ? and channel_id = ? and node_name = ?",
 			quotaData.UserID, quotaData.Username, quotaData.ModelName, quotaData.CreatedAt, quotaData.UseGroup, quotaData.TokenID, quotaData.ChannelID, quotaData.NodeName).
 		Updates(map[string]interface{}{
-			"count":            gorm.Expr("count + ?", quotaData.Count),
-			"quota":            gorm.Expr("quota + ?", quotaData.Quota),
-			"token_used":       gorm.Expr("token_used + ?", quotaData.TokenUsed),
-			"prompt_tokens":    gorm.Expr("prompt_tokens + ?", quotaData.PromptTokens),
+			"count":             gorm.Expr("count + ?", quotaData.Count),
+			"quota":             gorm.Expr("quota + ?", quotaData.Quota),
+			"token_used":        gorm.Expr("token_used + ?", quotaData.TokenUsed),
+			"prompt_tokens":     gorm.Expr("prompt_tokens + ?", quotaData.PromptTokens),
 			"completion_tokens": gorm.Expr("completion_tokens + ?", quotaData.CompletionTokens),
-			"cache_tokens":     gorm.Expr("cache_tokens + ?", quotaData.CacheTokens),
+			"cache_tokens":      gorm.Expr("cache_tokens + ?", quotaData.CacheTokens),
 		}).Error
 	if err != nil {
 		common.SysLog(fmt.Sprintf("increaseQuotaData error: %s", err))
@@ -190,6 +190,64 @@ func GetQuotaDataGroupByUser(startTime int64, endTime int64) (quotaData []*Quota
 		Group("username, created_at").
 		Find(&quotaDatas).Error
 	return quotaDatas, err
+}
+
+// ChannelQuotaData 按渠道聚合的看板数据，ChannelName 由 channels 表回填
+type ChannelQuotaData struct {
+	ChannelID        int    `json:"channel_id" gorm:"column:channel_id"`
+	ChannelName      string `json:"channel_name" gorm:"-"`
+	CreatedAt        int64  `json:"created_at" gorm:"column:created_at"`
+	TokenUsed        int    `json:"token_used" gorm:"column:token_used"`
+	Count            int    `json:"count" gorm:"column:count"`
+	Quota            int    `json:"quota" gorm:"column:quota"`
+	PromptTokens     int    `json:"prompt_tokens" gorm:"column:prompt_tokens"`
+	CompletionTokens int    `json:"completion_tokens" gorm:"column:completion_tokens"`
+	CacheTokens      int    `json:"cache_tokens" gorm:"column:cache_tokens"`
+}
+
+func GetQuotaDataGroupByChannel(startTime int64, endTime int64) (quotaData []*ChannelQuotaData, err error) {
+	err = DB.Table("quota_data").
+		Select("channel_id, created_at, sum(count) as count, sum(quota) as quota, sum(token_used) as token_used, sum(prompt_tokens) as prompt_tokens, sum(completion_tokens) as completion_tokens, sum(cache_tokens) as cache_tokens").
+		Where("created_at >= ? and created_at <= ?", startTime, endTime).
+		Group("channel_id, created_at").
+		Find(&quotaData).Error
+	if err != nil {
+		return nil, err
+	}
+	return quotaData, fillChannelQuotaNames(quotaData)
+}
+
+func fillChannelQuotaNames(rows []*ChannelQuotaData) error {
+	channelIDSet := make(map[int]struct{})
+	channelIDs := make([]int, 0)
+	for _, row := range rows {
+		if row.ChannelID == 0 {
+			continue
+		}
+		if _, ok := channelIDSet[row.ChannelID]; ok {
+			continue
+		}
+		channelIDSet[row.ChannelID] = struct{}{}
+		channelIDs = append(channelIDs, row.ChannelID)
+	}
+	if len(channelIDs) == 0 {
+		return nil
+	}
+
+	channelNameByID, err := channelNamesByIDs(channelIDs)
+	if err != nil {
+		return err
+	}
+	for _, row := range rows {
+		if name := channelNameByID[row.ChannelID]; name != "" {
+			row.ChannelName = name
+			continue
+		}
+		if row.ChannelID > 0 {
+			row.ChannelName = fmt.Sprintf("channel-%d", row.ChannelID)
+		}
+	}
+	return nil
 }
 
 func GetAllQuotaDates(startTime int64, endTime int64, username string) (quotaData []*QuotaData, err error) {

@@ -36,6 +36,18 @@ export interface QuotaDataItem {
   cache_tokens?: number
 }
 
+export interface ChannelQuotaDataItem {
+  channel_id?: number
+  channel_name?: string
+  created_at: number
+  token_used?: number
+  count?: number
+  quota?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  cache_tokens?: number
+}
+
 export interface FlowQuotaDataItem {
   user_id?: number
   username?: string

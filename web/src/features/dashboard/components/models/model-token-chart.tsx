@@ -38,6 +38,7 @@ interface ModelTokenChartProps {
   data: QuotaDataItem[]
   loading?: boolean
   timeGranularity?: TimeGranularity
+  titleKey?: string
 }
 
 export function ModelTokenChart(props: ModelTokenChartProps) {
@@ -53,6 +54,7 @@ export function ModelTokenChart(props: ModelTokenChartProps) {
     (typeof import('@visactor/vchart'))['ThemeManager'] | null
   >(null)
   const timeGranularity = props.timeGranularity ?? DEFAULT_TIME_GRANULARITY
+  const titleKey = props.titleKey ?? 'Token Usage Ranking'
 
   useEffect(() => {
     const updateTheme = async () => {
@@ -106,6 +108,7 @@ export function ModelTokenChart(props: ModelTokenChartProps) {
   const spec = chartData.spec_token_rank
   const chartKey = [
     'token-rank',
+    titleKey,
     props.loading ? 'loading' : 'ready',
     props.data.length,
     resolvedTheme,
@@ -116,7 +119,7 @@ export function ModelTokenChart(props: ModelTokenChartProps) {
     <div className='overflow-hidden rounded-lg border'>
       <div className='flex w-full items-center gap-2 border-b px-3 py-2 sm:px-5 sm:py-3'>
         <Hash className='text-muted-foreground/60 size-4' />
-        <div className='text-sm font-semibold'>{t('Token Usage Ranking')}</div>
+        <div className='text-sm font-semibold'>{t(titleKey)}</div>
         <span className='text-muted-foreground text-xs'>
           {t('Total:')} {formatTokensWan(totalTokens)}
         </span>

@@ -101,6 +101,12 @@ const LazyModelTokenChart = lazy(() =>
   }))
 )
 
+const LazyChannelTokenChart = lazy(() =>
+  import('./components/models/channel-token-chart').then((m) => ({
+    default: m.ChannelTokenChart,
+  }))
+)
+
 const LazyModelTokenTrendChart = lazy(() =>
   import('./components/models/model-token-trend-chart').then((m) => ({
     default: m.ModelTokenTrendChart,
@@ -399,6 +405,19 @@ export function Dashboard() {
                   />
                 </Suspense>
               </FadeIn>
+              {isAdmin && (
+                <FadeIn delay={0.13}>
+                  <Suspense fallback={<ModelChartsFallback />}>
+                    <LazyChannelTokenChart
+                      filters={modelFilters}
+                      timeGranularity={
+                        modelFilters.time_granularity ||
+                        DEFAULT_TIME_GRANULARITY
+                      }
+                    />
+                  </Suspense>
+                </FadeIn>
+              )}
               <FadeIn delay={0.15}>
                 <Suspense fallback={<ModelChartsFallback />}>
                   <LazyModelTokenTrendChart
