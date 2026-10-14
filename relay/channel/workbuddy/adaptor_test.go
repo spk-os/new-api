@@ -71,3 +71,62 @@ func TestApplyChatRules(t *testing.T) {
 		}
 	})
 }
+
+func TestApplyChatRulesClaudeCodeSystemFingerprint(t *testing.T) {
+	const fp = claudeCodeSystemFingerprint
+	const wantReplaced = claudeCodeSystemReplacement
+
+	t.Run("system 开头指纹句被改写", func(t *testing.T) {
+		a := &Adaptor{}
+		req := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+			{Role: "system", Content: fp + " Follow the user's instructions."},
+			{Role: "user", Content: "hi"},
+		}}
+		out := a.applyChatRules(req)
+		sys, ok := out.Messages[0].Content.(string)
+		require.True(t, ok)
+		assert.Equal(t, wantReplaced+" Follow the user's instructions.", sys)
+		assert.NotContains(t, sys, fp)
+	})
+
+	t.Run("system 数组形态 text 块被改写", func(t *testing.T) {
+		a := &Adaptor{}
+		req := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+			{Role: "system", Content: []dto.MediaContent{
+				{Type: "text", Text: fp},
+				{Type: "text", Text: "env: linux"},
+			}},
+			{Role: "user", Content: "hi"},
+		}}
+		out := a.applyChatRules(req)
+		blocks, ok := out.Messages[0].Content.([]dto.MediaContent)
+		require.True(t, ok)
+		assert.Equal(t, wantReplaced, blocks[0].Text)
+		assert.Equal(t, "env: linux", blocks[1].Text)
+	})
+
+	t.Run("非 system 角色不改写", func(t *testing.T) {
+		a := &Adaptor{}
+		req := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+			{Role: "user", Content: fp},
+		}}
+		out := a.applyChatRules(req)
+		assert.Equal(t, fp, out.Messages[0].Content)
+	})
+
+	t.Run("system 不含指纹句原样保留", func(t *testing.T) {
+		a := &Adaptor{}
+		// 句中位置与前导换行均不触发上游风控，也不应被改写
+		for _, content := range []string{
+			"Prefix text. " + fp,
+			"\n" + fp,
+			"You are Claude Code, Anthropic's official CLI",
+		} {
+			req := &dto.GeneralOpenAIRequest{Messages: []dto.Message{
+				{Role: "system", Content: content},
+			}}
+			out := a.applyChatRules(req)
+			assert.Equal(t, content, out.Messages[0].Content)
+		}
+	})
+}

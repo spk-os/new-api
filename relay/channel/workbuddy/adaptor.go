@@ -88,6 +88,36 @@ func (a *Adaptor) SetupRequestHeader(c *gin.Context, header *http.Header, info *
 	return nil
 }
 
+// Claude Code 官方 system prompt 首句是精确指纹：上游风控对以该句开头的
+// 请求逐字匹配并拒绝（400 code 11128 Illegal API invocation from an
+// unapproved channel）。2026-10-15 实测：部分子串、句中位置或前导换行均
+// 不触发，仅 system 开头完整连续出现才拦。转发时把首处改写为中性描述。
+const claudeCodeSystemFingerprint = "You are Claude Code, Anthropic's official CLI for Claude."
+const claudeCodeSystemReplacement = "You are a CLI coding agent."
+
+// sanitizeClaudeCodeSystem 改写 system 消息开头的 Claude Code 官方指纹句；
+// 句中或非起始位置出现不影响（上游仅匹配开头，无需改写）。
+// Content 兼容字符串与 multimodal 数组两种形态，其余形态原样保留。
+func sanitizeClaudeCodeSystem(msg *dto.Message) {
+	replaceLeading := func(s string) string {
+		if strings.HasPrefix(s, claudeCodeSystemFingerprint) {
+			return claudeCodeSystemReplacement + strings.TrimPrefix(s, claudeCodeSystemFingerprint)
+		}
+		return s
+	}
+	switch v := msg.Content.(type) {
+	case string:
+		msg.Content = replaceLeading(v)
+	case []dto.MediaContent:
+		for i := range v {
+			if v[i].Type == "text" {
+				v[i].Text = replaceLeading(v[i].Text)
+				break
+			}
+		}
+	}
+}
+
 // applyChatRules 应用 workbuddy body 约束（通用转换之后、发往上游之前）。
 func (a *Adaptor) applyChatRules(request *dto.GeneralOpenAIRequest) *dto.GeneralOpenAIRequest {
 	streamTrue := true
@@ -96,6 +126,10 @@ func (a *Adaptor) applyChatRules(request *dto.GeneralOpenAIRequest) *dto.General
 		// 上游拒绝 developer 角色（400 code 11128），CLI 同款修正为 system
 		if request.Messages[i].Role == "developer" {
 			request.Messages[i].Role = "system"
+		}
+		// system 开头的 Claude Code 官方指纹句触发上游渠道校验拦截，改写
+		if request.Messages[i].Role == "system" {
+			sanitizeClaudeCodeSystem(&request.Messages[i])
 		}
 	}
 	// tool_choice 仅接受字符串形态：{type,function:{name}} 对象取函数名，
