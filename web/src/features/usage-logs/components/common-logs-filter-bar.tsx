@@ -16,7 +16,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useIsFetching } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import type { Table } from '@tanstack/react-table'
 import { Eye, EyeOff } from 'lucide-react'
@@ -37,6 +37,8 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from '@/components/ui/tooltip'
+import { getChannels } from '@/features/channels/api'
+import { channelsQueryKeys } from '@/features/channels/lib/channel-actions'
 
 import { LOG_TYPE_ALL_VALUE, LOG_TYPE_FILTERS } from '../constants'
 import { buildSearchParams } from '../lib/filter'
@@ -57,6 +59,9 @@ type LogTypeValue = (typeof LOG_TYPE_FILTERS)[number]['value']
 const logTypeValueSet = new Set<string>(
   LOG_TYPE_FILTERS.map((type) => type.value)
 )
+
+const ALL_CHANNELS_VALUE = 'all'
+const CHANNEL_LIST_PARAMS = { p: 1, page_size: 1000, id_sort: true }
 
 type CommonLogDraft = {
   sourceKey: string
@@ -270,6 +275,33 @@ export function CommonLogsFilterBar<TData>(
   const logTypeLabel =
     logTypeItems.find((type) => type.value === logType)?.label ?? t('All Types')
 
+  const { data: channelsData } = useQuery({
+    queryKey: channelsQueryKeys.list(CHANNEL_LIST_PARAMS),
+    queryFn: () => getChannels(CHANNEL_LIST_PARAMS),
+    enabled: isAdmin,
+    staleTime: 5 * 60 * 1000,
+  })
+  const channels = useMemo(
+    () => channelsData?.data?.items ?? [],
+    [channelsData]
+  )
+  const channelItems = useMemo(
+    () => [
+      { value: ALL_CHANNELS_VALUE, label: t('All Channels') },
+      ...channels.map((channel) => ({
+        value: String(channel.id),
+        label: `${channel.name} (#${channel.id})`,
+      })),
+    ],
+    [channels, t]
+  )
+  const channelValue = filters.channel
+    ? String(filters.channel)
+    : ALL_CHANNELS_VALUE
+  const channelLabel =
+    channelItems.find((item) => item.value === channelValue)?.label ??
+    (filters.channel ? `#${filters.channel}` : t('All Channels'))
+
   const statsBar = (
     <div className='flex flex-wrap items-center gap-2'>
       <CommonLogsStats />
@@ -389,12 +421,30 @@ export function CommonLogsFilterBar<TData>(
       )}
       {isAdmin && (
         <LogsFilterField>
-          <LogsFilterInput
-            placeholder={t('Channel ID')}
-            value={filters.channel || ''}
-            onChange={(e) => handleChange('channel', e.target.value)}
-            onKeyDown={handleKeyDown}
-          />
+          <Select
+            items={channelItems}
+            value={channelValue}
+            onValueChange={(value) => {
+              const nextChannel =
+                typeof value === 'string' && value !== ALL_CHANNELS_VALUE
+                  ? value
+                  : undefined
+              handleChange('channel', nextChannel)
+            }}
+          >
+            <SelectTrigger>
+              <SelectValue>{channelLabel}</SelectValue>
+            </SelectTrigger>
+            <SelectContent alignItemWithTrigger={false}>
+              <SelectGroup>
+                {channelItems.map((item) => (
+                  <SelectItem key={item.value} value={item.value}>
+                    {item.label}
+                  </SelectItem>
+                ))}
+              </SelectGroup>
+            </SelectContent>
+          </Select>
         </LogsFilterField>
       )}
       <LogsFilterField>

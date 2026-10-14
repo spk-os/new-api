@@ -20,6 +20,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/advancedcustom"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
+	"github.com/QuantumNous/new-api/relay/channel/workbuddy"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/service"
@@ -368,6 +369,19 @@ func fetchChannelUpstreamModelIDs(channel *model.Channel) ([]string, error) {
 
 	if channel.Type == constant.ChannelTypeCodex {
 		return service.FetchCodexChannelModels(channel)
+	}
+
+	if channel.Type == constant.ChannelTypeWorkBuddy {
+		key, _, apiErr := channel.GetNextEnabledKey()
+		if apiErr != nil {
+			return nil, fmt.Errorf("获取渠道密钥失败: %w", apiErr)
+		}
+		key = strings.TrimSpace(key)
+		models, err := workbuddy.FetchCatalogModels(context.Background(), key, baseURL)
+		if err != nil {
+			return nil, sanitizeFetchModelsError(err, key)
+		}
+		return normalizeModelNames(models), nil
 	}
 
 	var url string
@@ -1103,4 +1117,50 @@ func DetectAllChannelUpstreamModelUpdates(c *gin.Context) {
 			"status":  task.Status,
 		},
 	})
+}
+
+// SyncWorkBuddyChannelModelsAtStartup 在服务启动时拉取启用的 WorkBuddy
+// 渠道的 /v3/config 模型花名册，把渠道 models 与上游对齐（模型名与
+// WorkBuddy 保持一致）。失败只记日志，不阻塞启动。
+func SyncWorkBuddyChannelModelsAtStartup() {
+	var channels []*model.Channel
+	if err := model.DB.Select(channelUpstreamModelUpdateSelectFields).
+		Where("type = ? AND status = ?", constant.ChannelTypeWorkBuddy, common.ChannelStatusEnabled).
+		Find(&channels).Error; err != nil {
+		common.SysLog(fmt.Sprintf("workbuddy startup model sync: query channels failed: %v", err))
+		return
+	}
+	changed := false
+	for _, channel := range channels {
+		if channel == nil {
+			continue
+		}
+		models, err := fetchChannelUpstreamModelIDs(channel)
+		if err != nil {
+			common.SysLog(fmt.Sprintf("workbuddy startup model sync: channel_id=%d name=%s fetch failed: %v", channel.Id, channel.Name, err))
+			continue
+		}
+		if len(models) == 0 {
+			continue
+		}
+		joined := strings.Join(models, ",")
+		current := strings.Join(normalizeModelNames(channel.GetModels()), ",")
+		if joined == current {
+			continue
+		}
+		channel.Models = joined
+		if err := model.DB.Model(&model.Channel{}).Where("id = ?", channel.Id).Update("models", joined).Error; err != nil {
+			common.SysLog(fmt.Sprintf("workbuddy startup model sync: channel_id=%d name=%s persist failed: %v", channel.Id, channel.Name, err))
+			continue
+		}
+		if err := channel.UpdateAbilities(nil); err != nil {
+			common.SysLog(fmt.Sprintf("workbuddy startup model sync: channel_id=%d name=%s update abilities failed: %v", channel.Id, channel.Name, err))
+			continue
+		}
+		common.SysLog(fmt.Sprintf("workbuddy startup model sync: channel_id=%d name=%s synced %d models", channel.Id, channel.Name, len(models)))
+		changed = true
+	}
+	if changed {
+		refreshChannelRuntimeCache()
+	}
 }

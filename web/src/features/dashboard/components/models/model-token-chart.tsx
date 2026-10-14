@@ -16,18 +16,19 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useEffect, useMemo, useRef, useState } from 'react'
 import { VChart } from '@visactor/react-vchart'
 import { Hash } from 'lucide-react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { useThemeRadiusPx } from '@/lib/theme-radius'
-import type { TimeGranularity } from '@/lib/time'
-import { VCHART_OPTION } from '@/lib/vchart'
+
 import { useThemeCustomization } from '@/context/theme-customization-provider'
 import { useTheme } from '@/context/theme-provider'
 import { DEFAULT_TIME_GRANULARITY } from '@/features/dashboard/constants'
 import { processChartData } from '@/features/dashboard/lib'
 import type { QuotaDataItem } from '@/features/dashboard/types'
+import { useThemeRadiusPx } from '@/lib/theme-radius'
+import type { TimeGranularity } from '@/lib/time'
+import { VCHART_OPTION } from '@/lib/vchart'
 
 let themeManagerPromise: Promise<
   (typeof import('@visactor/vchart'))['ThemeManager']
@@ -75,7 +76,6 @@ export function ModelTokenChart(props: ModelTokenChartProps) {
         props.loading ? [] : props.data,
         timeGranularity,
         t,
-        customization.preset,
         chartRadius
       ),
     [
@@ -90,16 +90,13 @@ export function ModelTokenChart(props: ModelTokenChartProps) {
 
   const totalTokens = useMemo(
     () =>
-      props.data.reduce(
-        (sum, item) => sum + (Number(item.token_used) || 0),
-        0
-      ),
+      props.data.reduce((sum, item) => sum + (Number(item.token_used) || 0), 0),
     [props.data]
   )
 
   const formatTokensWan = (value: number) => {
     if (value >= 10000) {
-      return (value / 10000).toFixed(2) + '万'
+      return Math.round(value / 10000) + 'W'
     }
     return Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(
       value

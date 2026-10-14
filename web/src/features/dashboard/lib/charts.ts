@@ -78,9 +78,11 @@ export function processChartData(
 
   const formatInt = (value: number) =>
     Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value)
+  // Token values render as whole W (万) without decimals to match the ranking
+  // bar and trend line; sub-1万 values keep their raw integer form.
   const formatTokensWan = (value: number) => {
     if (value >= 10000) {
-      return (value / 10000).toFixed(2) + '万'
+      return Math.round(value / 10000) + 'W'
     }
     return formatInt(value)
   }
@@ -143,6 +145,66 @@ export function processChartData(
       array.unshift({
         key: tt('Total:'),
         value: formatQuotaValue(sum),
+      })
+      return array
+    }
+  }
+
+  // Token-oriented dimension tooltip: formats each series' token value with
+  // formatTokensWan (not the quota formatter), sums the real token totals for
+  // the "Total:" line, collapses overflow into "Other", and sorts descending.
+  // The quota variant above divides tokens by quotaPerUnit (500000) which
+  // renders token-scale values as "$0.00" — unusable for token charts.
+  const makeTokenDimensionUpdateContent = () => {
+    return (array: TooltipLineItem[]) => {
+      const modelItems = array.filter(
+        (item) => !isOtherTooltipKey(String(item.key))
+      )
+      const otherItems = array.filter((item) =>
+        isOtherTooltipKey(String(item.key))
+      )
+      modelItems.sort(
+        (a, b) =>
+          (Number((b.datum as Record<string, unknown>)?.Tokens) || 0) -
+          (Number((a.datum as Record<string, unknown>)?.Tokens) || 0)
+      )
+      array = [...modelItems, ...otherItems]
+
+      let sum = 0
+      for (let i = 0; i < array.length; i++) {
+        const raw =
+          Number((array[i].datum as Record<string, unknown>)?.Tokens) || 0
+        sum += raw
+        array[i].value = formatTokensWan(raw)
+      }
+
+      if (array.length > MAX_TOOLTIP_MODELS) {
+        const visible = array.slice(0, MAX_TOOLTIP_MODELS)
+        const otherSum = array
+          .slice(MAX_TOOLTIP_MODELS)
+          .reduce(
+            (s, item) =>
+              s +
+              (Number((item.datum as Record<string, unknown>)?.Tokens) || 0),
+            0
+          )
+        array = [
+          ...visible,
+          {
+            key: otherLabel,
+            value: formatTokensWan(otherSum),
+            hasShape: true,
+            shapeType: 'square',
+            shapeFill: otherTooltipColor,
+            shapeStroke: otherTooltipColor,
+            shapeSize: 8,
+          },
+        ]
+      }
+
+      array.unshift({
+        key: tt('Total:'),
+        value: formatTokensWan(sum),
       })
       return array
     }
@@ -218,14 +280,35 @@ export function processChartData(
         data: [{ id: 'tokenRankData', values: [] }],
         xField: 'Tokens',
         yField: 'Model',
-        seriesField: 'Model',
+        seriesField: 'Type',
+        stack: true,
         direction: 'horizontal',
         title: {
           visible: true,
           text: tt('Token Usage Ranking'),
           subtext: tt('No data available'),
         },
-        legends: { visible: false },
+        legends: { visible: true, selectMode: 'single' },
+        color: {
+          type: 'ordinal',
+          domain: [tt('Input'), tt('Output'), tt('Cache'), tt('Total')],
+          range: ['#5B8FF9', '#5AD8A6', '#F6BD16', '#9B5DE5'],
+        },
+        background: { fill: 'transparent' },
+      },
+      spec_token_trend_line: {
+        type: 'line',
+        data: [{ id: 'tokenTrendData', values: [] }],
+        xField: 'Time',
+        yField: 'Tokens',
+        seriesField: 'Model',
+        stack: true,
+        legends: { visible: true, selectMode: 'single' },
+        title: {
+          visible: true,
+          text: tt('Token Usage Trend'),
+          subtext: tt('No data available'),
+        },
         background: { fill: 'transparent' },
       },
       totalQuotaDisplay: formatQuotaTotal(0),
@@ -243,7 +326,14 @@ export function processChartData(
   >()
   const modelTotalsMap = new Map<
     string,
-    { quota: number; count: number; tokens: number }
+    {
+      quota: number
+      count: number
+      tokens: number
+      prompt: number
+      completion: number
+      cache: number
+    }
   >()
 
   data.forEach((item) => {
@@ -253,6 +343,9 @@ export function processChartData(
     const quota = Number(item.quota) || 0
     const count = Number(item.count) || 0
     const tokens = Number(item.token_used) || 0
+    const prompt = Number(item.prompt_tokens) || 0
+    const completion = Number(item.completion_tokens) || 0
+    const cache = Number(item.cache_tokens) || 0
 
     // Aggregate by time and model
     if (!timeModelMap.has(timeKey)) {
@@ -271,11 +364,17 @@ export function processChartData(
       quota: 0,
       count: 0,
       tokens: 0,
+      prompt: 0,
+      completion: 0,
+      cache: 0,
     }
     modelTotalsMap.set(model, {
       quota: totalExisting.quota + quota,
       count: totalExisting.count + count,
       tokens: totalExisting.tokens + tokens,
+      prompt: totalExisting.prompt + prompt,
+      completion: totalExisting.completion + completion,
+      cache: totalExisting.cache + cache,
     })
   })
 
@@ -364,6 +463,24 @@ export function processChartData(
     lineValues.push(...timeData)
   })
   lineValues.sort((a, b) => a.Time.localeCompare(b.Time))
+
+  // Stacked line: per-hour token usage trend by model. Reuses the hourly
+  // quota_data buckets (chartTimes + sortedModels + timeModelMap) so no new
+  // backend endpoint is needed; the minute-level alarm is handled server-side.
+  const tokenTrendValues: Array<{
+    Time: string
+    Model: string
+    Tokens: number
+  }> = []
+  chartTimes.forEach((time) => {
+    const modelMap = timeModelMap.get(time)
+    sortedModels.forEach((model) => {
+      const stats = modelMap?.get(model)
+      const tokens = Number(stats?.tokens) || 0
+      tokenTrendValues.push({ Time: time, Model: model, Tokens: tokens })
+    })
+  })
+  tokenTrendValues.sort((a, b) => a.Time.localeCompare(b.Time))
 
   // Area chart: top models by quota + "Other" bucket (too many series = unreadable)
   const MAX_AREA_MODELS = 15
@@ -471,13 +588,82 @@ export function processChartData(
     rankValues = allRankValues
   }
 
-  const tokenRankValues = Array.from(modelTotalsMap.entries())
+  // Token rank: stacked horizontal bar showing input/output/cache segments per
+  // model. Long-format data (one row per model×segment) drives VChart stacking
+  // via seriesField; the band axis domain fixes the model order by total tokens
+  // descending so the heaviest model sits on top.
+  const inputLabel = tt('Input')
+  const outputLabel = tt('Output')
+  const cacheLabel = tt('Cache')
+  // 旧数据（部署 quota_data 分项落库前的行）三列均为 0，堆叠柱会消失。
+  // 用 token_used 总数作单段"总计"兜底，保证历史柱子不空。
+  const totalLabel = tt('Total')
+  const segmentColor = {
+    type: 'ordinal',
+    domain: [inputLabel, outputLabel, cacheLabel, totalLabel],
+    range: ['#5B8FF9', '#5AD8A6', '#F6BD16', '#9B5DE5'],
+  }
+  const rankedTokenModels = Array.from(modelTotalsMap.entries())
     .map(([model, stats]) => ({
       Model: model,
       Tokens: Number(stats.tokens) || 0,
+      Prompt: Number(stats.prompt) || 0,
+      Completion: Number(stats.completion) || 0,
+      Cache: Number(stats.cache) || 0,
     }))
     .filter((item) => item.Tokens > 0)
     .sort((a, b) => b.Tokens - a.Tokens)
+
+  let tokenRankModels = rankedTokenModels
+  if (rankedTokenModels.length > MAX_RANK_MODELS) {
+    const top = rankedTokenModels.slice(0, MAX_RANK_MODELS)
+    const other = rankedTokenModels.slice(MAX_RANK_MODELS).reduce(
+      (acc, item) => ({
+        Model: otherLabel,
+        Tokens: acc.Tokens + item.Tokens,
+        Prompt: acc.Prompt + item.Prompt,
+        Completion: acc.Completion + item.Completion,
+        Cache: acc.Cache + item.Cache,
+      }),
+      { Model: otherLabel, Tokens: 0, Prompt: 0, Completion: 0, Cache: 0 }
+    )
+    tokenRankModels = [...top, other]
+  }
+
+  const tokenRankDomain = tokenRankModels.map((item) => item.Model)
+  const tokenRankValues: Array<{
+    Model: string
+    Type: string
+    Tokens: number
+  }> = []
+  tokenRankModels.forEach((item) => {
+    const segmentSum = item.Prompt + item.Completion + item.Cache
+    if (segmentSum > 0) {
+      // 新数据：按 输入/输出/缓存 三段堆叠
+      tokenRankValues.push({
+        Model: item.Model,
+        Type: inputLabel,
+        Tokens: item.Prompt,
+      })
+      tokenRankValues.push({
+        Model: item.Model,
+        Type: outputLabel,
+        Tokens: item.Completion,
+      })
+      tokenRankValues.push({
+        Model: item.Model,
+        Type: cacheLabel,
+        Tokens: item.Cache,
+      })
+    } else if (item.Tokens > 0) {
+      // 旧数据：分项未落库（三列 0），用 token_used 总数作单段，避免柱子消失
+      tokenRankValues.push({
+        Model: item.Model,
+        Type: totalLabel,
+        Tokens: item.Tokens,
+      })
+    }
+  })
 
   return {
     spec_pie: {
@@ -717,13 +903,14 @@ export function processChartData(
       data: [{ id: 'tokenRankData', values: tokenRankValues }],
       xField: 'Tokens',
       yField: 'Model',
-      seriesField: 'Model',
+      seriesField: 'Type',
+      stack: true,
       direction: 'horizontal',
       title: {
         visible: true,
         text: tt('Token Usage Ranking'),
       },
-      legends: { visible: false },
+      legends: { visible: true, selectMode: 'single' },
       bar: {
         state: {
           hover: { stroke: '#000', lineWidth: 1 },
@@ -731,13 +918,78 @@ export function processChartData(
       },
       label: {
         visible: true,
-        position: 'outside',
+        position: 'inside',
         formatMethod: (value: number) => formatTokensWan(value),
         style: { fontSize: 11 },
       },
+      // Stack total at the end of each bar (top of a horizontal stack) — the
+      // per-segment inside label above shows the input/output/cache split; this
+      // shows the model's grand total so the ranking magnitude is legible.
+      totalLabel: {
+        visible: true,
+        position: 'top',
+        formatMethod: (value: number) => formatTokensWan(Number(value) || 0),
+        style: { fontSize: 11, fontWeight: 500 },
+      },
       axes: [
-        { orient: 'left', type: 'band' },
-        { orient: 'bottom', type: 'linear', visible: false },
+        {
+          orient: 'left',
+          type: 'band',
+          domain: tokenRankDomain,
+        },
+        {
+          orient: 'bottom',
+          type: 'linear',
+          visible: false,
+        },
+      ],
+      tooltip: {
+        mark: {
+          content: [
+            {
+              key: (datum: Record<string, unknown>) => datum?.Type,
+              value: (datum: Record<string, unknown>) =>
+                formatTokensWan(Number(datum?.Tokens) || 0),
+            },
+          ],
+        },
+        dimension: {
+          content: [
+            {
+              key: (datum: Record<string, unknown>) => datum?.Type,
+              value: (datum: Record<string, unknown>) =>
+                formatTokensWan(Number(datum?.Tokens) || 0),
+            },
+          ],
+          updateContent: makeTokenDimensionUpdateContent(),
+        },
+      },
+      color: segmentColor,
+      background: { fill: 'transparent' },
+      animation: true,
+    },
+    spec_token_trend_line: {
+      type: 'line',
+      data: [{ id: 'tokenTrendData', values: tokenTrendValues }],
+      xField: 'Time',
+      yField: 'Tokens',
+      seriesField: 'Model',
+      stack: true,
+      legends: { visible: true, selectMode: 'single' },
+      color: modelColor,
+      title: {
+        visible: true,
+        text: tt('Token Usage Trend'),
+      },
+      axes: [
+        { orient: 'bottom', type: 'band' },
+        {
+          orient: 'left',
+          type: 'linear',
+          label: {
+            formatMethod: (value: number) => formatTokensWan(value),
+          },
+        },
       ],
       tooltip: {
         mark: {
@@ -749,8 +1001,20 @@ export function processChartData(
             },
           ],
         },
+        // Stacked line defaults to a dimension tooltip (all series at the
+        // hovered time). Without this override VChart renders raw token
+        // numbers; format with W and add a real-token Total: line.
+        dimension: {
+          content: [
+            {
+              key: (datum: Record<string, unknown>) => datum?.Model,
+              value: (datum: Record<string, unknown>) =>
+                formatTokensWan(Number(datum?.Tokens) || 0),
+            },
+          ],
+          updateContent: makeTokenDimensionUpdateContent(),
+        },
       },
-      color: modelColor,
       background: { fill: 'transparent' },
       animation: true,
     },

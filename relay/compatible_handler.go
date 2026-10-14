@@ -1,6 +1,7 @@
 package relay
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -10,6 +11,8 @@ import (
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/dto"
 	"github.com/QuantumNous/new-api/logger"
+	"github.com/QuantumNous/new-api/relay/channel/deveco"
+	"github.com/QuantumNous/new-api/relay/channel/workbuddy"
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	relayconstant "github.com/QuantumNous/new-api/relay/constant"
 	"github.com/QuantumNous/new-api/relay/helper"
@@ -188,6 +191,16 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 	var httpResp *http.Response
 	resp, err := adaptor.DoRequest(c, info, requestBody)
 	if err != nil {
+		// deveco jwtToken 被刷新端点明确拒绝：服务端无法自动续期，需人工
+		// 在 Windows 端重新登录，发飞书告警（1h 去重；网络类失败不告警）
+		if errors.Is(err, deveco.ErrTokenRejected) {
+			service.AlarmDevEcoTokenExpiry(c, "jwtToken 已失效且服务端无法自动续期（jwToken/check 拒绝）")
+		}
+		// workbuddy refreshToken 被刷新端点明确拒绝：会话已死（401/code 12153），
+		// 服务端无法自动续期，需人工在 Windows 端重新登录，发飞书告警（1h 去重）
+		if errors.Is(err, workbuddy.ErrTokenRejected) {
+			service.AlarmWorkBuddyTokenExpiry(c, "refreshToken 已失效且服务端无法自动续期（token/refresh 拒绝，session dead）")
+		}
 		return types.NewOpenAIError(err, types.ErrorCodeDoRequestFailed, http.StatusInternalServerError)
 	}
 
@@ -198,6 +211,16 @@ func TextHelper(c *gin.Context, info *relaycommon.RelayInfo) (newAPIError *types
 		info.IsStream = info.IsStream || strings.HasPrefix(httpResp.Header.Get("Content-Type"), "text/event-stream")
 		if httpResp.StatusCode != http.StatusOK {
 			newApiErr := service.RelayErrorHandler(c.Request.Context(), httpResp, false)
+			// deveco accessToken 过期（cron 自动续期未覆盖）：401 必然是鉴权；
+			// 403 需排除已知良性场景——额度耗尽（quota）与上下文超限（timed out）。
+			msgLower := strings.ToLower(newApiErr.Error())
+			if httpResp.StatusCode == http.StatusUnauthorized ||
+				(httpResp.StatusCode == http.StatusForbidden &&
+					strings.Contains(msgLower, "token") &&
+					!strings.Contains(msgLower, "quota") &&
+					!strings.Contains(msgLower, "timed out")) {
+				service.AlarmDevEcoTokenExpiry(c, fmt.Sprintf("上游 %d 拒绝凭证，accessToken 自动续期未生效", httpResp.StatusCode))
+			}
 			// reset status code 重置状态码
 			service.ResetStatusCode(newApiErr, statusCodeMappingStr)
 			return newApiErr

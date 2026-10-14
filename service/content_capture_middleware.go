@@ -27,13 +27,18 @@ func ContentCaptureMiddleware() gin.HandlerFunc {
 
 		c.Next()
 
-		// Capture streaming body buffer (filled by streamTrackingBody during consumption)
-		// Only use buffer if handler didn't already set a reconstructed body
+		// Capture streaming body buffer (filled by streamTrackingBody during
+		// consumption). This is the safety net for streaming responses whose
+		// handler did not set a reconstructed body on _content_upstream_resp.
+		// We must NOT log the raw SSE chunk stream verbatim — a single request
+		// can produce many MB of `data:` frames, which bloats storage and breaks
+		// the request_id content-log lookup. Instead, merge the stream buffer
+		// into one aggregated JSON before recording (see aggregateStreamBuffer).
 		if bufPtr, ok := c.Get("_content_upstream_body_buf"); ok {
 			if buf, ok := bufPtr.(*bytes.Buffer); ok && buf.Len() > 0 {
 				if upstreamResp, exists := c.Get("_content_upstream_resp"); exists {
 					if ur, ok := upstreamResp.(*HttpMessage); ok && ur.Body == "" {
-						ur.Body = buf.String()
+						ur.Body = aggregateStreamBuffer(buf.Bytes())
 					}
 				}
 			}

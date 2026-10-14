@@ -57,8 +57,8 @@ import {
   isPerCallBilling,
 } from '../../lib/utils'
 import type { LogOtherData } from '../../types'
-import { DetailsDialog } from '../dialogs/details-dialog'
 import { ContentLogDialog } from '../dialogs/content-log-dialog'
+import { DetailsDialog } from '../dialogs/details-dialog'
 import { ModelBadge } from '../model-badge'
 import { TimingMetricsCell, StreamTpsCell } from '../timing-metrics-cell'
 import { useUsageLogsContext } from '../usage-logs-provider'
@@ -603,7 +603,7 @@ export function useCommonLogsColumns(isAdmin: boolean): ColumnDef<UsageLog>[] {
     },
     size: 160,
   })
-columns.push({
+  columns.push({
     accessorKey: 'client',
     header: t('Client'),
     cell: function ClientCell({ row }) {
@@ -623,7 +623,7 @@ columns.push({
     size: 120,
     meta: { mobileHidden: true },
   })
-columns.push(
+  columns.push(
     {
       accessorKey: 'model_name',
       header: t('Model'),
@@ -880,9 +880,7 @@ columns.push(
               </span>
             )}
           </span>
-          <span className='font-mono text-xs tabular-nums'>
-            {modelDisplay}
-          </span>
+          <span className='font-mono text-xs tabular-nums'>{modelDisplay}</span>
         </div>
       )
     },
@@ -915,6 +913,7 @@ columns.push(
             requestId={requestId}
             open={dialogOpen}
             onOpenChange={setDialogOpen}
+            retryAttempts={parseLogOther(log.other)?.retry_attempts}
           />
         </>
       )

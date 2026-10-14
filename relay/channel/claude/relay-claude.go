@@ -41,6 +41,7 @@ func ResponseClaude2OpenAI(claudeResponse *dto.ClaudeResponse) *dto.OpenAITextRe
 }
 
 type ClaudeResponseInfo = relayconvert.ClaudeResponseInfo
+type ClaudeToolUseBlock = relayconvert.ClaudeToolUseBlock
 
 func cacheCreationTokensForOpenAIUsage(usage *dto.Usage) int {
 	if usage == nil {
@@ -198,16 +199,49 @@ func ClaudeStreamHandler(c *gin.Context, resp *http.Response, info *relaycommon.
 }
 
 func reconstructClaudeStreamResponse(c *gin.Context, claudeInfo *ClaudeResponseInfo) {
-	if !common.ContentLogEnabled || claudeInfo.ResponseText.Len() == 0 {
+	if !common.ContentLogEnabled {
+		return
+	}
+	// 只要产生了文本或 tool_use 内容，就聚合成单个 JSON 写回 content log。
+	// 工具调用响应（stop_reason=tool_use）的 delta 是 input_json_delta，
+	// 不进 ResponseText，必须同时看 ToolUses，否则会跳过聚合、
+	// content log 里只剩原始 SSE 流（2026-08-05 踩坑）。
+	hasText := claudeInfo.ResponseText.Len() > 0
+	hasTools := len(claudeInfo.ToolUses) > 0
+	if !hasText && !hasTools {
 		return
 	}
 	if resp, exists := c.Get("_content_upstream_resp"); exists {
 		if msg, ok := resp.(*service.HttpMessage); ok {
+			content := make([]interface{}, 0, 1+len(claudeInfo.ToolUses))
+			if hasText {
+				content = append(content, map[string]string{
+					"type": "text",
+					"text": claudeInfo.ResponseText.String(),
+				})
+			}
+			for i := range claudeInfo.ToolUses {
+				tu := &claudeInfo.ToolUses[i]
+				// input_json_delta 片段拼起来是合法 JSON；解析为对象
+				// 还原成非流式响应结构，解析失败则保留原始字符串。
+				var inputVal interface{}
+				if raw := tu.Input.String(); raw != "" {
+					if err := common.Unmarshal([]byte(raw), &inputVal); err != nil {
+						inputVal = raw
+					}
+				}
+				content = append(content, map[string]interface{}{
+					"type":  "tool_use",
+					"id":    tu.ID,
+					"name":  tu.Name,
+					"input": inputVal,
+				})
+			}
 			reconstructed := map[string]interface{}{
 				"id":      claudeInfo.ResponseId,
 				"type":    "message",
 				"role":    "assistant",
-				"content": []map[string]string{{"type": "text", "text": claudeInfo.ResponseText.String()}},
+				"content": content,
 				"model":   claudeInfo.Model,
 			}
 			if claudeInfo.Usage != nil {

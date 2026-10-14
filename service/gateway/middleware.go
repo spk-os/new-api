@@ -74,6 +74,11 @@ func GatewayStrategyMiddleware() gin.HandlerFunc {
 		}
 		if plan == nil {
 			cands := BuildCandidates(prof, requestedModel, opts)
+			// Session balancing: spread distinct sessions across equal-priority
+			// providers (reorders the first equal-priority block in place).
+			if sid := ExtractSessionId(c); sid != "" {
+				SessionBalanceCandidates(cands, sid)
+			}
 			plan = &GatewayPlan{Profile: prof, Retry: prof.ProviderRetry, Candidates: cands, Affinity: prof.Affinity}
 		}
 

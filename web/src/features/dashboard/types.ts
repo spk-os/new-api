@@ -31,6 +31,9 @@ export interface QuotaDataItem {
   token_used?: number
   count?: number
   quota?: number
+  prompt_tokens?: number
+  completion_tokens?: number
+  cache_tokens?: number
 }
 
 export interface FlowQuotaDataItem {
@@ -243,6 +246,7 @@ export interface ProcessedChartData {
   spec_model_line: VChartSpec
   spec_rank_bar: VChartSpec
   spec_token_rank: VChartSpec
+  spec_token_trend_line: VChartSpec
   totalQuotaDisplay: string
   totalCountDisplay: string
 }

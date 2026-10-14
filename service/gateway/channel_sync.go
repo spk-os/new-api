@@ -52,7 +52,7 @@ func SyncChannels(cfg *GatewayYaml) (*SyncResult, error) {
 		newCh := &model.Channel{
 			Name:     p.Name,
 			Type:     chType,
-			Key:      p.Key,
+			Key:      strings.Join(splitCSV(p.Key), "\n"),
 			Models:   modelsCSV,
 			Group:    groups,
 			Status:   status,
@@ -70,7 +70,7 @@ func SyncChannels(cfg *GatewayYaml) (*SyncResult, error) {
 		continue
 	}
 
-	ch.Key = p.Key
+	ch.Key = strings.Join(splitCSV(p.Key), "\n")
 	ch.Models = modelsCSV
 	ch.Group = groups
 	ch.Status = status

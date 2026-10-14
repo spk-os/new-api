@@ -1,6 +1,7 @@
+import { Copy, Check, Loader2, AlertCircle } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { Copy, Check, Loader2, AlertCircle } from 'lucide-react'
+
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -10,7 +11,9 @@ import {
 } from '@/components/ui/dialog'
 import { Label } from '@/components/ui/label'
 import { useCopyToClipboard } from '@/hooks/use-copy-to-clipboard'
+
 import { getContentLog } from '../../api'
+import type { RetryAttemptInfo } from '../../types'
 
 interface HttpMessage {
   method?: string
@@ -39,20 +42,72 @@ interface ContentLogDialogProps {
   requestId: string
   open: boolean
   onOpenChange: (open: boolean) => void
+  /** Failed relay attempts collected during the retry loop (from log.other.retry_attempts). */
+  retryAttempts?: RetryAttemptInfo[]
 }
 
-function DetailRow(props: { label: string; value: React.ReactNode; mono?: boolean }) {
+function RetryAttemptView(props: {
+  attempt: RetryAttemptInfo
+  index: number
+}) {
+  const { attempt, index } = props
+  const { t } = useTranslation()
+  return (
+    <div className='min-w-0 space-y-1'>
+      <div className='text-foreground/80 text-xs font-semibold'>
+        {t('Attempt {{index}}', { index })}
+      </div>
+      <DetailRow
+        label={t('Provider')}
+        value={`${attempt.channel_name || ''} #${attempt.channel_id}`}
+        mono
+      />
+      <DetailRow label={t('Model')} value={attempt.model_name} mono />
+      {attempt.status_code != null && (
+        <DetailRow
+          label={t('Status')}
+          value={String(attempt.status_code)}
+          mono
+        />
+      )}
+      {attempt.error_reason && (
+        <DetailRow label={t('Error Reason')} value={attempt.error_reason} />
+      )}
+      {attempt.use_time_seconds != null && (
+        <DetailRow
+          label={t('Duration')}
+          value={`${attempt.use_time_seconds}s`}
+          mono
+        />
+      )}
+    </div>
+  )
+}
+
+function DetailRow(props: {
+  label: string
+  value: React.ReactNode
+  mono?: boolean
+}) {
   return (
     <div className='grid min-w-0 grid-cols-[5.25rem_minmax(0,1fr)] gap-2 text-sm sm:grid-cols-[7rem_minmax(0,1fr)] sm:gap-3'>
-      <span className='text-muted-foreground min-w-0 text-xs'>{props.label}</span>
-      <span className={`max-w-full min-w-0 text-xs break-all sm:break-words ${props.mono ? 'font-mono' : ''}`}>
+      <span className='text-muted-foreground min-w-0 text-xs'>
+        {props.label}
+      </span>
+      <span
+        className={`max-w-full min-w-0 text-xs break-all sm:break-words ${props.mono ? 'font-mono' : ''}`}
+      >
         {props.value}
       </span>
     </div>
   )
 }
 
-function Section(props: { label: string; icon?: React.ReactNode; children: React.ReactNode }) {
+function Section(props: {
+  label: string
+  icon?: React.ReactNode
+  children: React.ReactNode
+}) {
   return (
     <div className='min-w-0 space-y-1.5'>
       <Label className='flex items-center gap-1.5 text-xs font-semibold'>
@@ -114,7 +169,9 @@ function MessageView(props: { msg: HttpMessage; title: string }) {
           <div className='relative min-w-0'>
             <CopyButton text={JSON.stringify(msg.headers, null, 2)} />
             <pre className='bg-background/60 max-h-32 overflow-y-auto rounded border p-2 font-mono text-[11px] leading-relaxed break-all whitespace-pre-wrap'>
-              {Object.entries(msg.headers).map(([k, v]) => `${k}: ${v}`).join('\n')}
+              {Object.entries(msg.headers)
+                .map(([k, v]) => `${k}: ${v}`)
+                .join('\n')}
             </pre>
           </div>
         </div>
@@ -139,6 +196,7 @@ export function ContentLogDialog(props: ContentLogDialogProps) {
   const [entry, setEntry] = useState<ContentLogEntry | null>(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const retryAttempts = props.retryAttempts ?? []
 
   useEffect(() => {
     if (!props.open || !props.requestId) return
@@ -146,13 +204,19 @@ export function ContentLogDialog(props: ContentLogDialogProps) {
     setError('')
     setEntry(null)
     getContentLog(props.requestId)
-      .then((res: { success: boolean; data?: ContentLogEntry; message?: string }) => {
-        if (res.success && res.data) {
-          setEntry(res.data)
-        } else {
-          setError(res.message || t('Content log not found'))
+      .then(
+        (res: {
+          success: boolean
+          data?: ContentLogEntry
+          message?: string
+        }) => {
+          if (res.success && res.data) {
+            setEntry(res.data)
+          } else {
+            setError(res.message || t('Content log not found'))
+          }
         }
-      })
+      )
       .catch((err: Error) => {
         setError(err.message || t('Failed to load content log'))
       })
@@ -178,7 +242,7 @@ export function ContentLogDialog(props: ContentLogDialogProps) {
         <div className='min-h-0 flex-1 overflow-y-auto px-4 pb-4'>
           {loading && (
             <div className='flex items-center justify-center py-8'>
-              <Loader2 className='size-6 animate-spin text-muted-foreground' />
+              <Loader2 className='text-muted-foreground size-6 animate-spin' />
             </div>
           )}
           {error && (
@@ -191,37 +255,86 @@ export function ContentLogDialog(props: ContentLogDialogProps) {
             <div className='w-full max-w-full min-w-0 space-y-2.5 py-1 sm:space-y-3'>
               {/* Overview */}
               <div className='min-w-0 space-y-1'>
-                <DetailRow label={t('Request ID')} value={entry.request_id} mono />
-                <DetailRow label={t('Channel')} value={`${entry.channel_name || ''} #${entry.channel_id}`} mono />
+                <DetailRow
+                  label={t('Request ID')}
+                  value={entry.request_id}
+                  mono
+                />
+                <DetailRow
+                  label={t('Channel')}
+                  value={`${entry.channel_name || ''} #${entry.channel_id}`}
+                  mono
+                />
                 <DetailRow label={t('Model')} value={entry.model_name} />
                 {entry.upstream_model_name && (
-                  <DetailRow label={t('Upstream Model')} value={entry.upstream_model_name} />
+                  <DetailRow
+                    label={t('Upstream Model')}
+                    value={entry.upstream_model_name}
+                  />
                 )}
               </div>
 
+              {/* Retry Attempts: one block per failed attempt, including the
+                  initial try (index 1) and every retry that followed. */}
+              {retryAttempts.length > 0 && (
+                <Section
+                  label={`${t('Retry Attempts')} (${retryAttempts.length})`}
+                >
+                  <div className='divide-y'>
+                    {retryAttempts.map((attempt, i) => {
+                      const key = [
+                        attempt.channel_id,
+                        attempt.model_name,
+                        attempt.status_code,
+                        i,
+                      ].join('-')
+                      return (
+                        <div key={key} className='py-1.5 first:pt-0 last:pb-0'>
+                          <RetryAttemptView attempt={attempt} index={i + 1} />
+                        </div>
+                      )
+                    })}
+                  </div>
+                </Section>
+              )}
+
               {/* Gateway Request */}
               {entry.gateway_request && (
-                <MessageView msg={entry.gateway_request} title={t('Gateway Request')} />
+                <MessageView
+                  msg={entry.gateway_request}
+                  title={t('Gateway Request')}
+                />
               )}
 
               {/* Gateway Response */}
               {entry.gateway_response && (
-                <MessageView msg={entry.gateway_response} title={t('Gateway Response')} />
+                <MessageView
+                  msg={entry.gateway_response}
+                  title={t('Gateway Response')}
+                />
               )}
 
               {/* Upstream Request */}
               {entry.upstream_request && (
-                <MessageView msg={entry.upstream_request} title={t('Upstream Request')} />
+                <MessageView
+                  msg={entry.upstream_request}
+                  title={t('Upstream Request')}
+                />
               )}
 
               {/* Upstream Response */}
               {entry.upstream_response ? (
-                <MessageView msg={entry.upstream_response} title={t('Upstream Response')} />
+                <MessageView
+                  msg={entry.upstream_response}
+                  title={t('Upstream Response')}
+                />
               ) : entry.gateway_response && entry.gateway_response.body ? (
                 <div className='min-w-0 space-y-1.5'>
                   <div className='bg-muted/30 min-w-0 overflow-hidden rounded-md border p-2.5 max-sm:p-2'>
                     <span className='text-muted-foreground text-xs italic'>
-                      {t('Streaming response — content is shown in Gateway Response above')}
+                      {t(
+                        'Streaming response — content is shown in Gateway Response above'
+                      )}
                     </span>
                   </div>
                 </div>

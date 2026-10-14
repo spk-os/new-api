@@ -71,6 +71,7 @@ func ExecuteWithPlan(c *gin.Context, plan *GatewayPlan, doOnce func(cand *Candid
 		}
 
 		candidateSucceeded := false
+		quotaExhausted := false
 		var lastOpenAIErr *dto.OpenAIErrorWithStatusCode
 
 		for ki := 0; ki < len(keys); ki++ {
@@ -103,6 +104,15 @@ func ExecuteWithPlan(c *gin.Context, plan *GatewayPlan, doOnce func(cand *Candid
 					code = openaiErr.StatusCode
 				}
 
+				if openaiErr != nil && IsQuotaExhaustedError(openaiErr.StatusCode, openaiErr.Error.Message) {
+					// Quota exhausted for this provider's current cycle:
+					// retrying the same provider (any key) is pointless
+					// until the quota resets — cool it down immediately and
+					// fail over to the next candidate.
+					quotaExhausted = true
+					break
+				}
+
 				if isNonRetryable(plan, code) {
 					break
 				}
@@ -119,6 +129,9 @@ func ExecuteWithPlan(c *gin.Context, plan *GatewayPlan, doOnce func(cand *Candid
 				}
 			}
 
+			if quotaExhausted {
+				break
+			}
 			if candidateSucceeded {
 				break
 			}
@@ -132,7 +145,11 @@ func ExecuteWithPlan(c *gin.Context, plan *GatewayPlan, doOnce func(cand *Candid
 			return nil, nil
 		}
 
-		RecordProviderFailure(cand.ProviderId)
+		if quotaExhausted {
+			ForceProviderCooldown(cand.ProviderId)
+		} else {
+			RecordProviderFailure(cand.ProviderId)
+		}
 
 		if plan.AffinityHit && ci == 0 {
 			if plan.Affinity == nil || plan.Affinity.Failover == nil || !plan.Affinity.Failover.Enable {

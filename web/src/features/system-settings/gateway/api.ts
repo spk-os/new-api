@@ -17,6 +17,7 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { api } from '@/lib/api'
+
 import type {
   GatewayConfigResponse,
   GatewayApplyResult,
@@ -28,48 +29,41 @@ import type {
 } from './types'
 
 export async function getGatewayConfig() {
-  const res = await api.get<GatewayConfigResponse>(
-    '/api/admin/gateway/config',
-  )
+  const res = await api.get<GatewayConfigResponse>('/api/admin/gateway/config')
   return res.data
 }
 
 export async function saveGatewayConfig(yaml: string) {
-  const res = await api.put<GatewayApplyResult>(
-    '/api/admin/gateway/config',
-    { yaml },
-  )
+  const res = await api.put<GatewayApplyResult>('/api/admin/gateway/config', {
+    yaml,
+  })
   return res.data
 }
 
 export async function validateGatewayConfig(yaml: string) {
   const res = await api.post<GatewayValidateResult>(
     '/api/admin/gateway/config/validate',
-    { yaml },
+    { yaml }
   )
   return res.data
 }
 
 export async function syncGatewayChannels() {
   const res = await api.post<GatewaySyncResult>(
-    '/api/admin/gateway/config/sync',
+    '/api/admin/gateway/config/sync'
   )
   return res.data
 }
 
-export async function previewGatewayRoute(
-  request: GatewayRoutePreviewRequest,
-) {
+export async function previewGatewayRoute(request: GatewayRoutePreviewRequest) {
   const res = await api.post<GatewayRoutePreviewResult>(
     '/api/admin/gateway/route/preview',
-    request,
+    request
   )
   return res.data
 }
 
 export async function getGatewayStats() {
-  const res = await api.get<GatewayStatsResponse>(
-    '/api/admin/gateway/stats',
-  )
+  const res = await api.get<GatewayStatsResponse>('/api/admin/gateway/stats')
   return res.data
 }

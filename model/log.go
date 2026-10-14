@@ -342,6 +342,20 @@ type RecordConsumeLogParams struct {
 	Other            map[string]interface{} `json:"other"`
 }
 
+// LoopClientCtxKey is the context key under which RecordConsumeLog stores the
+// resolved client identity (X-Agent-Name / User-Agent + ClientIDResolver) for
+// the AfterRecordConsumeLogHook. Defined here so both the setter (model) and
+// the reader (service loop-call detection) share one source of truth.
+const LoopClientCtxKey = "_loop_resolved_client"
+
+// AfterRecordConsumeLogHook is invoked at the end of RecordConsumeLog (after
+// the consume log row and quota_data are written). It is defined as a package
+// var rather than a direct call so model does not need to import service (the
+// alarm implementation lives in the service package and registers itself in
+// init()). createdAt is the same timestamp used for the log row, so the alarm
+// minute-bucket aligns with the recorded request time. Nil = no-op.
+var AfterRecordConsumeLogHook func(c *gin.Context, userId int, createdAt int64, params RecordConsumeLogParams)
+
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
 	if !common.LogConsumeEnabled {
 		return
@@ -383,6 +397,10 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	if len(client) > 128 {
 		client = client[:128]
 	}
+	// Expose the resolved client to the AfterRecordConsumeLogHook so loop-call
+	// detection (service package) reuses the exact same identity without
+	// re-deriving it or creating a model→service dependency.
+	c.Set(LoopClientCtxKey, client)
 	log := &Log{
 		UserId:           userId,
 		Username:         username,
@@ -416,17 +434,23 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 	}
 	if common.DataExportEnabled {
 		LogQuotaData(QuotaDataLogParams{
-			UserID:    userId,
-			Username:  username,
-			ModelName: params.ModelName,
-			Quota:     params.Quota,
-			CreatedAt: createdAt,
-			TokenUsed: params.PromptTokens + params.CompletionTokens + params.CacheTokens,
-			UseGroup:  params.Group,
-			TokenID:   params.TokenId,
-			ChannelID: params.ChannelId,
-			NodeName:  common.NodeName,
+			UserID:           userId,
+			Username:         username,
+			ModelName:        params.ModelName,
+			Quota:            params.Quota,
+			CreatedAt:        createdAt,
+			TokenUsed:        params.PromptTokens + params.CompletionTokens + params.CacheTokens,
+			UseGroup:         params.Group,
+			TokenID:          params.TokenId,
+			ChannelID:        params.ChannelId,
+			NodeName:         common.NodeName,
+			PromptTokens:     params.PromptTokens,
+			CompletionTokens: params.CompletionTokens,
+			CacheTokens:      params.CacheTokens,
 		})
+	}
+	if AfterRecordConsumeLogHook != nil {
+		AfterRecordConsumeLogHook(c, userId, createdAt, params)
 	}
 }
 

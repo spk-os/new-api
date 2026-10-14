@@ -12,13 +12,25 @@ import (
 	"github.com/tidwall/sjson"
 )
 
+// ClaudeToolUseBlock 累积流式 tool_use 内容块。
+// content_block_start 携带 id/name，content_block_delta(input_json_delta)
+// 的 partial_json 片段按 index 拼接到 Input。
+type ClaudeToolUseBlock struct {
+	Index int
+	ID    string
+	Name  string
+	Input strings.Builder
+}
+
 type ClaudeResponseInfo struct {
 	ResponseId   string
-	Created      int64
-	Model        string
+	Created     int64
+	Model       string
 	ResponseText strings.Builder
-	Usage        *dto.Usage
-	Done         bool
+	// ToolUses 累积流式响应中的 tool_use 块，供 content log 聚合时还原。
+	ToolUses []ClaudeToolUseBlock
+	Usage    *dto.Usage
+	Done     bool
 }
 
 func StopReasonClaudeToOpenAI(reason string) string {
@@ -360,6 +372,17 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 			if claudeResponse.Delta.Thinking != nil {
 				claudeInfo.ResponseText.WriteString(*claudeResponse.Delta.Thinking)
 			}
+			// 累积 tool_use 的输入参数片段（input_json_delta），
+			// 按 content block index 定位到对应的 ToolUses 条目。
+			if claudeResponse.Delta.Type == "input_json_delta" && claudeResponse.Delta.PartialJson != nil {
+				idx := claudeResponse.GetIndex()
+				for i := range claudeInfo.ToolUses {
+					if claudeInfo.ToolUses[i].Index == idx {
+						claudeInfo.ToolUses[i].Input.WriteString(*claudeResponse.Delta.PartialJson)
+						break
+					}
+				}
+			}
 		}
 	} else if claudeResponse.Type == "message_delta" {
 		if claudeResponse.Usage != nil {
@@ -388,6 +411,14 @@ func FormatClaudeResponseInfo(claudeResponse *dto.ClaudeResponse, oaiResponse *d
 
 		claudeInfo.Done = true
 	} else if claudeResponse.Type == "content_block_start" {
+		// 记录 tool_use 块的 id/name，后续 input_json_delta 按 index 填充。
+		if claudeResponse.ContentBlock != nil && claudeResponse.ContentBlock.Type == "tool_use" {
+			claudeInfo.ToolUses = append(claudeInfo.ToolUses, ClaudeToolUseBlock{
+				Index: claudeResponse.GetIndex(),
+				ID:    claudeResponse.ContentBlock.Id,
+				Name:  claudeResponse.ContentBlock.Name,
+			})
+		}
 	} else {
 		return false
 	}

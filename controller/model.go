@@ -18,6 +18,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/relay/helper"
 	"github.com/QuantumNous/new-api/service"
+	"github.com/QuantumNous/new-api/service/gateway"
 	"github.com/QuantumNous/new-api/setting/operation_setting"
 	"github.com/QuantumNous/new-api/types"
 	"github.com/gin-gonic/gin"
@@ -260,6 +261,31 @@ func ListModels(c *gin.Context, modelType int) {
 	if len(ownerGroups) > 0 {
 		ownerByModel = getPreferredModelOwners(userModelNames, ownerGroups)
 	}
+	// Append gateway virtual models (auto / auto-free / auto-<cap> / aliases).
+	// These are not real channel models; the strategy middleware rewrites them
+	// to a real model at request time (see gateway.matchModel). Exposing them
+	// lets agents discover the gateway's auto-routing entry points via
+	// GET /v1/models. Skip when the token has a model whitelist — a virtual
+	// model the token is not allowed to call must not be advertised.
+	virtualModels := gateway.VirtualModelNames()
+	if !modelLimitEnable && len(virtualModels) > 0 {
+		seen := make(map[string]bool, len(userModelNames))
+		for _, m := range userModelNames {
+			seen[m] = true
+		}
+		for _, vm := range virtualModels {
+			if seen[vm] {
+				continue
+			}
+			userModelNames = append(userModelNames, vm)
+			seen[vm] = true
+		}
+		for _, vm := range virtualModels {
+			if _, ok := ownerByModel[vm]; !ok {
+				ownerByModel[vm] = "gateway"
+			}
+		}
+	}
 	userOpenAiModels := make([]dto.OpenAIModels, 0, len(userModelNames))
 	for _, modelName := range userModelNames {
 		userOpenAiModels = append(userOpenAiModels, buildOpenAIModel(modelName, ownerByModel))
@@ -326,7 +352,25 @@ func EnabledListModels(c *gin.Context) {
 
 func RetrieveModel(c *gin.Context, modelType int) {
 	modelId := c.Param("model")
-	if aiModel, ok := openAIModelsMap[modelId]; ok {
+	aiModel, ok := openAIModelsMap[modelId]
+	if !ok {
+		// Fall back to gateway virtual models (auto / auto-free / auto-<cap> /
+		// aliases) so agents can GET /v1/models/<virtual-model> and get a 200
+		// instead of a 404, matching what ListModels advertises.
+		for _, vm := range gateway.VirtualModelNames() {
+			if vm == modelId {
+				aiModel = dto.OpenAIModels{
+					Id:      modelId,
+					Object:  "model",
+					Created: 1626777600,
+					OwnedBy: "gateway",
+				}
+				ok = true
+				break
+			}
+		}
+	}
+	if ok {
 		switch modelType {
 		case constant.ChannelTypeAnthropic:
 			c.JSON(200, dto.AnthropicModel{

@@ -43,6 +43,12 @@ docker stop "new-api-$STANDBY" 2>/dev/null || true
 docker rm "new-api-$STANDBY" 2>/dev/null || true
 
 # 使用新镜像启动 standby
+# docker-compose.ha.yml 的 SQL_DSN/REDIS_CONN_STRING 要求 PG_PASSWORD/REDIS_PASSWORD
+# 从 secrets 导出（同 gateway-lifecycle.sh），否则 compose 插值直接失败。
+PG_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-pg-prod-password"
+REDIS_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-redis-prod-password"
+export PG_PASSWORD="$(tr -d '\r\n' < "$PG_PASSWORD_FILE")"
+export REDIS_PASSWORD="$(tr -d '\r\n' < "$REDIS_PASSWORD_FILE")"
 GATEWAY_IMAGE="$NEW_IMAGE" docker compose -f docker-compose.ha.yml up -d "$STANDBY"
 log "  $STANDBY 容器已启动 ✓"
 
@@ -83,8 +89,8 @@ log "Phase 6: 切换流量到 $STANDBY..."
 log "Phase 7: 观察期（60秒）..."
 sleep 60
 
-# 检查错误率
-ERROR_COUNT=$(docker logs --since 60s "new-api-$STANDBY" 2>&1 | grep -ci "error" || echo 0)
+# 检查错误率（grep -c 无匹配时输出 0 且退出码 1，不能再用 || echo 0，会拼出两行）
+ERROR_COUNT=$(docker logs --since 60s "new-api-$STANDBY" 2>&1 | grep -ci "error") || ERROR_COUNT=0
 if [[ $ERROR_COUNT -gt 10 ]]; then
     log "WARN: 观察期内发现 $ERROR_COUNT 条错误日志"
     log "  如需回滚: $SCRIPT_DIR/gateway-switch.sh rollback"
@@ -96,6 +102,21 @@ fi
 log "Phase 8: 停止旧容器 $ACTIVE（保留用于回滚）..."
 docker stop "new-api-$ACTIVE"
 log "  $ACTIVE 已停止 ✓"
+
+# Step 10: 回写默认镜像标签 new-api:gateway -> 本次新镜像
+# 使 .env.ha 的 GATEWAY_IMAGE=new-api:gateway 默认启动路径始终指向最新已部署镜像，
+# 避免后续不带 GATEWAY_IMAGE 覆盖的 compose up / --force-recreate / 容器重建
+# 用旧标签重建容器、把升级冲回（2026-08-03 踩坑：标签停留在 Jul 23 旧构建）。
+log "Phase 9: 回写默认标签 new-api:gateway -> $NEW_IMAGE..."
+docker tag "$NEW_IMAGE" new-api:gateway
+DEPLOYED_ID=$(docker inspect "$NEW_IMAGE" --format '{{.Id}}')
+DEFAULT_ID=$(docker inspect new-api:gateway --format '{{.Id}}')
+if [[ "$DEPLOYED_ID" != "$DEFAULT_ID" ]]; then
+    log "ERROR: 标签回写校验失败 (deployed=$DEPLOYED_ID default=$DEFAULT_ID)"
+    log "  请手动: docker tag $NEW_IMAGE new-api:gateway"
+else
+    log "  new-api:gateway -> $NEW_IMAGE ✓"
+fi
 
 log "═══════════════════════════════════════"
 log "  升级完成！"

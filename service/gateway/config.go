@@ -140,7 +140,61 @@ func normalizeConfig(cfg *GatewayYaml) {
 			}
 		}
 	}
+
+	// alarm defaults — fill zero values so operators can omit the whole
+	// block. FeishuWebhook is intentionally NOT filled here: an empty value
+	// falls back to the compiled-in spk-os-alarm default at runtime, which
+	// lets us rotate the webhook URL without rebuilding.
+	if cfg.Alarm == nil {
+		cfg.Alarm = &AlarmConfig{}
+	}
+	if cfg.Alarm.OneReqTokens == 0 {
+		cfg.Alarm.OneReqTokens = defaultAlarmOneReqTokens
+	}
+	if cfg.Alarm.TokensPerMinute == 0 {
+		cfg.Alarm.TokensPerMinute = defaultAlarmTokensPerMinute
+	}
+	if cfg.Alarm.Interval == 0 {
+		cfg.Alarm.Interval = defaultAlarmIntervalMs
+	}
+	// loop-call detection defaults — all four operator-tunable thresholds
+	// can be omitted from the YAML; zero values fall back to the rule's
+	// spec defaults (5W tokens, 1% size diff, 5s response, 3 min sleep).
+	if cfg.Alarm.LoopMinTokens == 0 {
+		cfg.Alarm.LoopMinTokens = defaultAlarmLoopMinTokens
+	}
+	if cfg.Alarm.LoopSizeDiffPct <= 0 {
+		cfg.Alarm.LoopSizeDiffPct = defaultAlarmLoopSizeDiffPct
+	}
+	if cfg.Alarm.LoopMaxRespMs == 0 {
+		cfg.Alarm.LoopMaxRespMs = defaultAlarmLoopMaxRespMs
+	}
+	if cfg.Alarm.LoopSleepMs == 0 {
+		cfg.Alarm.LoopSleepMs = defaultAlarmLoopSleepMs
+	}
+	if cfg.Alarm.LoopWindowMs == 0 {
+		cfg.Alarm.LoopWindowMs = defaultAlarmLoopWindowMs
+	}
+	if cfg.Alarm.LoopMinHits == 0 {
+		cfg.Alarm.LoopMinHits = defaultAlarmLoopMinHits
+	}
 }
+
+// Compiled-in alarm defaults. Interval unit is milliseconds; 600000ms = 10 min,
+// matching the "no repeat within 10 min" requirement.
+const (
+	defaultAlarmOneReqTokens    = 200000
+	defaultAlarmTokensPerMinute = 1200000
+	defaultAlarmIntervalMs      = 600000
+
+	// Loop-call detection defaults (see AlarmConfig doc).
+	defaultAlarmLoopMinTokens   int64 = 50000
+	defaultAlarmLoopSizeDiffPct       = 1.0
+	defaultAlarmLoopMaxRespMs   int64 = 5000
+	defaultAlarmLoopSleepMs     int64 = 180000
+	defaultAlarmLoopWindowMs    int64 = 60000
+	defaultAlarmLoopMinHits           = 5
+)
 
 func validate(cfg *GatewayYaml) error {
 	if len(cfg.LLMGateway) == 0 {
@@ -205,6 +259,17 @@ func validate(cfg *GatewayYaml) error {
 					return err
 				}
 			}
+		}
+	}
+
+	// model_name_mapping rules — each must be "pattern: replacement" with
+	// both halves non-empty. An empty list is allowed (disables mapping);
+	// nil (absent) is also valid and falls back to compiled-in defaults at
+	// request time.
+	for i, rule := range cfg.ModelNameMapping {
+		pat, repl := splitMappingRule(rule)
+		if strings.TrimSpace(pat) == "" || strings.TrimSpace(repl) == "" {
+			return fmt.Errorf("gateway config: model_name_mapping[%d] must be \"pattern: replacement\" with both halves non-empty, got %q", i, rule)
 		}
 	}
 	return nil
@@ -334,6 +399,59 @@ func SaveConfig(yamlText string) (*ApplyResult, error) {
 		}
 	}
 	return result, nil
+}
+
+// currentYamlText returns the effective gateway YAML text: the DB option
+// first (same precedence as LoadConfig), else the config file. ok is false
+// when no config exists anywhere.
+func currentYamlText() (string, bool) {
+	if dbReadOption != nil {
+		if val, ok := dbReadOption(OptGatewayRoutingConfigYaml); ok && strings.TrimSpace(val) != "" {
+			return val, true
+		}
+	}
+	path := GetConfigPath()
+	if path == "" {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", false
+	}
+	return string(data), true
+}
+
+// PersistYamlText validates and persists yamlText through the same path as
+// SaveConfig (DB option + atomic file write + in-memory swap) but WITHOUT
+// running the config→DB channel/cost sync hooks. It backs the reverse
+// channel→YAML sync, where re-running the forward hooks would immediately
+// overwrite the very channel change being synced.
+func PersistYamlText(yamlText string) error {
+	cfg, err := ParseAndValidate(yamlText)
+	if err != nil {
+		return err
+	}
+
+	if dbWriteOption != nil {
+		if err := dbWriteOption(OptGatewayRoutingConfigYaml, yamlText); err != nil {
+			return fmt.Errorf("gateway config: persist to DB: %w", err)
+		}
+	}
+
+	path := GetConfigPath()
+	if path != "" {
+		if err := writeFileAtomic(path, []byte(yamlText)); err != nil {
+			return fmt.Errorf("gateway config: write %s: %w", path, err)
+		}
+		if fi, statErr := os.Stat(path); statErr == nil {
+			configMu.Lock()
+			lastFileMod = fi.ModTime()
+			configMu.Unlock()
+		}
+	}
+
+	swapGlobalConfig(cfg)
+	return nil
 }
 
 func writeFileAtomic(path string, data []byte) error {

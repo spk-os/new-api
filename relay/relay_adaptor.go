@@ -16,6 +16,8 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/cohere"
 	"github.com/QuantumNous/new-api/relay/channel/coze"
 	"github.com/QuantumNous/new-api/relay/channel/deepseek"
+	"github.com/QuantumNous/new-api/relay/channel/deveco"
+	"github.com/QuantumNous/new-api/relay/channel/workbuddy"
 	"github.com/QuantumNous/new-api/relay/channel/dify"
 	"github.com/QuantumNous/new-api/relay/channel/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/jimeng"
@@ -26,6 +28,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/moonshot"
 	"github.com/QuantumNous/new-api/relay/channel/ollama"
 	"github.com/QuantumNous/new-api/relay/channel/openai"
+	"github.com/QuantumNous/new-api/relay/channel/opencode"
 	"github.com/QuantumNous/new-api/relay/channel/palm"
 	"github.com/QuantumNous/new-api/relay/channel/perplexity"
 	"github.com/QuantumNous/new-api/relay/channel/replicate"
@@ -123,6 +126,12 @@ func GetAdaptor(apiType int) channel.Adaptor {
 		return &codex.Adaptor{}
 	case constant.APITypeAdvancedCustom:
 		return &advancedcustom.Adaptor{}
+	case constant.APITypeOpenCode:
+		return &opencode.Adaptor{}
+	case constant.APITypeDevEco:
+		return &deveco.Adaptor{}
+	case constant.APITypeWorkBuddy:
+		return &workbuddy.Adaptor{}
 	}
 	return nil
 }

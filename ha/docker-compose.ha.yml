@@ -1,31 +1,9 @@
 # ============================================================
 # LLM Gateway 高可用部署 - 蓝绿双容器 + Nginx + Redis
-# 复用现有 PostgreSQL (docker-db_postgres-1, docker_default 网络)
+# 复用 SPK-OS prod 基础设施 (spk-pg-prod + spk-redis-prod)
 # ============================================================
 
-version: '3.8'
-
 services:
-  # ============================================================
-  # Redis（专用实例，亲和绑定 + 共享缓存）
-  # ============================================================
-
-  redis:
-    image: redis:6-alpine
-    container_name: new-api-redis
-    restart: always
-    command: ["redis-server", "--requirepass", "${REDIS_PASSWORD:-redis_secure_2026}",
-              "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
-    volumes:
-      - redis_data:/data
-    networks:
-      - gateway-net
-    healthcheck:
-      test: ["CMD", "redis-cli", "-a", "${REDIS_PASSWORD:-redis_secure_2026}", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 3
-
   # ============================================================
   # Nginx 反向代理（对外唯一端口 3500）
   # ============================================================
@@ -33,7 +11,7 @@ services:
   nginx:
     image: nginx:alpine
     container_name: llm-gateway-nginx
-    restart: always
+    restart: "no"
     ports:
       - "3500:80"
     volumes:
@@ -59,7 +37,7 @@ services:
   blue:
     image: ${GATEWAY_IMAGE:-new-api:gateway}
     container_name: new-api-blue
-    restart: always
+    restart: "no"
     command: --log-dir /app/logs
     ports:
       - "3501:3000"
@@ -68,8 +46,8 @@ services:
       - ./logs/blue:/app/logs
       - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
-      - SQL_DSN=postgresql://postgres:${PG_PASSWORD:-difyai123456}@${PG_HOST:-docker-db_postgres-1}:${PG_PORT:-5432}/${PG_DB:-new-api}
-      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-redis_secure_2026}@new-api-redis:6379
+      - SQL_DSN=postgresql://${PG_USER:-spk}:${PG_PASSWORD:?PG_PASSWORD must be loaded by gateway-lifecycle.sh}@${PG_HOST:-spk-pg-prod}:${PG_PORT:-5432}/${PG_DB:-new-api}
+      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be loaded by gateway-lifecycle.sh}@${REDIS_HOST:-spk-redis-prod}:${REDIS_PORT:-6379}/0
       - SESSION_SECRET=${SESSION_SECRET:-change_me_in_production}
       - SYNC_FREQUENCY=10
       - BATCH_UPDATE_ENABLED=true
@@ -78,10 +56,7 @@ services:
       - ERROR_LOG_ENABLED=true
     networks:
       - gateway-net
-      - docker_default        # 连接到 PG 所在网络
-    depends_on:
-      redis:
-        condition: service_healthy
+      - spk-infra-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
       interval: 15s
@@ -96,7 +71,7 @@ services:
   green:
     image: ${GATEWAY_IMAGE:-new-api:gateway}
     container_name: new-api-green
-    restart: always
+    restart: "no"
     command: --log-dir /app/logs
     ports:
       - "3502:3000"
@@ -105,8 +80,8 @@ services:
       - ./logs/green:/app/logs
       - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
-      - SQL_DSN=postgresql://postgres:${PG_PASSWORD:-difyai123456}@${PG_HOST:-docker-db_postgres-1}:${PG_PORT:-5432}/${PG_DB:-new-api}
-      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:-redis_secure_2026}@new-api-redis:6379
+      - SQL_DSN=postgresql://${PG_USER:-spk}:${PG_PASSWORD:?PG_PASSWORD must be loaded by gateway-lifecycle.sh}@${PG_HOST:-spk-pg-prod}:${PG_PORT:-5432}/${PG_DB:-new-api}
+      - REDIS_CONN_STRING=redis://:${REDIS_PASSWORD:?REDIS_PASSWORD must be loaded by gateway-lifecycle.sh}@${REDIS_HOST:-spk-redis-prod}:${REDIS_PORT:-6379}/0
       - SESSION_SECRET=${SESSION_SECRET:-change_me_in_production}
       - SYNC_FREQUENCY=10
       - BATCH_UPDATE_ENABLED=true
@@ -115,10 +90,7 @@ services:
       - ERROR_LOG_ENABLED=true
     networks:
       - gateway-net
-      - docker_default
-    depends_on:
-      redis:
-        condition: service_healthy
+      - spk-infra-net
     healthcheck:
       test: ["CMD-SHELL", "wget -q -O - http://localhost:3000/api/status | grep -o '\"success\":\\s*true' || exit 1"]
       interval: 15s
@@ -127,12 +99,11 @@ services:
       start_period: 30s
 
 volumes:
-  redis_data:
   shared_data:
 
 networks:
   gateway-net:
     driver: bridge
-  docker_default:
+  spk-infra-net:
     external: true        # 复用现有 PG 所在网络
-    name: docker_default
+    name: spk-infra-net

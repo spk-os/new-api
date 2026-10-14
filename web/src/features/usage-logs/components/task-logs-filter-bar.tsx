@@ -16,11 +16,22 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 
 For commercial licensing, please contact support@quantumnous.com
 */
-import { useQueryClient, useIsFetching } from '@tanstack/react-query'
+import { useQuery, useQueryClient, useIsFetching } from '@tanstack/react-query'
 import { useNavigate, getRouteApi } from '@tanstack/react-router'
 import { type Table } from '@tanstack/react-table'
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect, useCallback, useMemo } from 'react'
 import { useTranslation } from 'react-i18next'
+
+import {
+  Select,
+  SelectContent,
+  SelectGroup,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { getChannels } from '@/features/channels/api'
+import { channelsQueryKeys } from '@/features/channels/lib/channel-actions'
 
 import { buildSearchParams } from '../lib/filter'
 import { getDefaultTimeRange } from '../lib/utils'
@@ -34,6 +45,9 @@ import {
 import { useLogsViewScope } from './usage-logs-provider'
 
 const route = getRouteApi('/_authenticated/usage-logs/$section')
+
+const ALL_CHANNELS_VALUE = 'all'
+const CHANNEL_LIST_PARAMS = { p: 1, page_size: 1000, id_sort: true }
 
 type TaskLikeLogCategory = Extract<LogCategory, 'drawing' | 'task'>
 type TaskLogsFilters = DrawingLogFilters | TaskLogFilters
@@ -160,6 +174,34 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   )
 
   const filterValue = getFilterValue(filters, props.logCategory)
+
+  const { data: channelsData } = useQuery({
+    queryKey: channelsQueryKeys.list(CHANNEL_LIST_PARAMS),
+    queryFn: () => getChannels(CHANNEL_LIST_PARAMS),
+    enabled: isAdmin,
+    staleTime: 5 * 60 * 1000,
+  })
+  const channels = useMemo(
+    () => channelsData?.data?.items ?? [],
+    [channelsData]
+  )
+  const channelItems = useMemo(
+    () => [
+      { value: ALL_CHANNELS_VALUE, label: t('All Channels') },
+      ...channels.map((channel) => ({
+        value: String(channel.id),
+        label: `${channel.name} (#${channel.id})`,
+      })),
+    ],
+    [channels, t]
+  )
+  const channelValue = filters.channel
+    ? String(filters.channel)
+    : ALL_CHANNELS_VALUE
+  const channelLabel =
+    channelItems.find((item) => item.value === channelValue)?.label ??
+    (filters.channel ? `#${filters.channel}` : t('All Channels'))
+
   const placeholder =
     props.logCategory === 'drawing'
       ? t('Filter by MjProxy task ID')
@@ -190,12 +232,30 @@ export function TaskLogsFilterBar<TData>(props: TaskLogsFilterBarProps<TData>) {
   )
   const channelFilter = isAdmin ? (
     <LogsFilterField>
-      <LogsFilterInput
-        placeholder={t('Channel ID')}
-        value={filters.channel || ''}
-        onChange={(e) => handleChange('channel', e.target.value)}
-        onKeyDown={handleKeyDown}
-      />
+      <Select
+        items={channelItems}
+        value={channelValue}
+        onValueChange={(value) => {
+          const nextChannel =
+            typeof value === 'string' && value !== ALL_CHANNELS_VALUE
+              ? value
+              : undefined
+          handleChange('channel', nextChannel)
+        }}
+      >
+        <SelectTrigger>
+          <SelectValue>{channelLabel}</SelectValue>
+        </SelectTrigger>
+        <SelectContent alignItemWithTrigger={false}>
+          <SelectGroup>
+            {channelItems.map((item) => (
+              <SelectItem key={item.value} value={item.value}>
+                {item.label}
+              </SelectItem>
+            ))}
+          </SelectGroup>
+        </SelectContent>
+      </Select>
     </LogsFilterField>
   ) : null
 

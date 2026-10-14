@@ -10,6 +10,13 @@ const (
 	ContextKeyOriginalModel    ContextKey = "original_model"
 	ContextKeyRequestStartTime ContextKey = "request_start_time"
 
+	// ContextKeyModelMappedFrom records the original request model name before
+	// it was rewritten by the global model_name_mapping middleware. Set only on
+	// a mapping hit; downstream billing/logging see the mapped name as
+	// original_model, while this key preserves the client-supplied source for
+	// traceability.
+	ContextKeyModelMappedFrom ContextKey = "model_mapped_from"
+
 	/* token related keys */
 	ContextKeyTokenUnlimited         ContextKey = "token_unlimited_quota"
 	ContextKeyTokenKey               ContextKey = "token_key"

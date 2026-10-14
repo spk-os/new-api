@@ -1,5 +1,11 @@
 # New-API Docker Compose Configuration
-# 
+#
+# ⚠️ 遗留单容器配置（迁移前）。生产环境已切换到 HA 蓝绿部署，
+#    见 ha/docker-compose.ha.yml + ha/bin/gateway-upgrade.sh（spk-dev-gateway skill）。
+#    切勿在此目录跑 `docker compose pull && docker compose up -d --force-recreate`：
+#    本文件 image=calciumion/new-api:latest（公开镜像），会重建出与 HA 无关的单容器
+#    `new-api`，并可能因端口/网络冲突影响现网。仅用于本地开发/参考。
+#
 # Quick Start:
 #   1. docker-compose up -d
 #   2. Access at http://localhost:3000

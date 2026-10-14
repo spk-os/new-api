@@ -99,6 +99,9 @@ func main() {
 	// endpoint inference can read cached route settings on first request.
 	model.GetPricing()
 
+	// WorkBuddy 渠道启动时拉取 /v3/config 模型花名册，保持模型名与上游一致
+	go controller.SyncWorkBuddyChannelModelsAtStartup()
+
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
 
@@ -330,6 +333,16 @@ func InitResources() error {
 			return val, ok
 		},
 		model.UpdateOption,
+	)
+	// 网关配置保存（SaveConfig）时同步渠道与成本：yaml order→渠道 priority、
+	// provider key/models/status→渠道，保证"保存并应用"双向一致。
+	gateway.SetSyncHooks(
+		func(cfg *gateway.GatewayYaml) (*gateway.SyncResult, error) {
+			return gateway.SyncChannels(cfg)
+		},
+		func(cfg *gateway.GatewayYaml) (*gateway.CostSyncResult, error) {
+			return gateway.SyncCost(cfg.Cost)
+		},
 	)
 	gateway.InitGatewayConfig()
 

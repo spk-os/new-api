@@ -102,6 +102,30 @@ func RecordChannelFailure(channelId int, statusCode int) {
 	}
 }
 
+// ForceChannelCooldown places a channel into cooldown immediately, bypassing
+// the failure threshold. Used for unrecoverable errors such as quota
+// exhaustion where retrying the channel is pointless until the quota cycle
+// resets.
+func ForceChannelCooldown(channelId int) {
+	if channelId <= 0 {
+		return
+	}
+	now := channelNowFunc()
+	channelCooldownMu.Lock()
+	defer channelCooldownMu.Unlock()
+
+	var e *channelCooldownEntry
+	if v, ok := channelCooldownMap.Load(channelId); ok {
+		e, _ = v.(*channelCooldownEntry)
+	}
+	if e == nil {
+		e = &channelCooldownEntry{}
+	}
+	e.CooldownUntil = now.Add(time.Duration(CooldownDurationSec) * time.Second)
+	channelCooldownMap.Store(channelId, e)
+	common.SysLog(fmt.Sprintf("渠道 #%d 因配额耗尽进入冷却期 %d秒", channelId, CooldownDurationSec))
+}
+
 // IsChannelInCooldown reports whether the channel is currently in cooldown.
 func IsChannelInCooldown(channelId int) bool {
 	if channelId <= 0 {

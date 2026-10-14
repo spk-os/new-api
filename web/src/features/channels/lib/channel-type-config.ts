@@ -144,6 +144,43 @@ export const CHANNEL_TYPE_CONFIGS: Record<number, ChannelTypeConfig> = {
       models: 'Models exposed by this channel',
     },
   },
+  59: {
+    id: 59,
+    name: CHANNEL_TYPES[59],
+    icon: 'openai',
+    defaultBaseUrl: 'https://opencode.ai/zen',
+    hints: {
+      key: 'Zen account key, or "public" for anonymous free tier',
+      models:
+        'Free models from OpenCode Zen, e.g. mimo-v2.5-free, deepseek-v4-flash-free',
+      baseUrl: 'Default: https://opencode.ai/zen',
+    },
+  },
+  60: {
+    id: 60,
+    name: CHANNEL_TYPES[60],
+    icon: 'openai',
+    defaultBaseUrl: 'https://cn.devecostudio.huawei.com/sse/codeGenie/maas/v2',
+    hints: {
+      key: 'Long-lived jwtToken from deveco CLI login (refreshes access token automatically), or a raw access token for short-term testing',
+      models: 'Models served by DevEco Code, e.g. GLM-5.3',
+      baseUrl:
+        'Default: https://cn.devecostudio.huawei.com/sse/codeGenie/maas/v2',
+    },
+  },
+  61: {
+    id: 61,
+    name: CHANNEL_TYPES[61],
+    icon: 'openai',
+    defaultBaseUrl: 'https://www.workbuddy.cn',
+    hints: {
+      key: 'Credential JSON exported from Windows WorkBuddy: {"accessToken":"...","refreshToken":"...","uid":"...","enterpriseId":"...","domain":"..."} (refreshes access token automatically), or a raw access token for short-term testing',
+      models:
+        'Built-in WorkBuddy models, e.g. hy4-preview, deepseek-v4.1-flash, kimi-k3',
+      baseUrl:
+        'Default: https://www.workbuddy.cn (backup: https://copilot.tencent.com)',
+    },
+  },
 }
 
 /**

@@ -1,11 +1,15 @@
 package claude
 
 import (
+	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/QuantumNous/new-api/common"
 	"github.com/QuantumNous/new-api/dto"
+	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/relayconvert"
+	"github.com/gin-gonic/gin"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -372,4 +376,90 @@ func TestOpenAIChatRequestToClaudeMessages_ClaudeOpus48ThinkingUsesAdaptiveHighE
 	require.Nil(t, claudeRequest.Temperature)
 	require.Nil(t, claudeRequest.TopP)
 	require.Nil(t, claudeRequest.TopK)
+}
+
+// TestFormatClaudeResponseInfo_ToolUseAccumulation 验证 tool_use 流式响应
+// 的 content_block_start 与 input_json_delta 片段按 index 累积到 ToolUses，
+// 且不污染 ResponseText（保证聚合跳过条件能命中 hasTools 分支）。
+func TestFormatClaudeResponseInfo_ToolUseAccumulation(t *testing.T) {
+	claudeInfo := &ClaudeResponseInfo{
+		Usage:        &dto.Usage{},
+		ResponseText: strings.Builder{},
+	}
+	require.True(t, FormatClaudeResponseInfo(&dto.ClaudeResponse{
+		Type:         "content_block_start",
+		Index:        commonPointer(0),
+		ContentBlock: &dto.ClaudeMediaMessage{Type: "tool_use", Id: "tool_1", Name: "lookup"},
+	}, nil, claudeInfo))
+
+	p1 := `{"loc":`
+	p2 := `"x"}`
+	require.True(t, FormatClaudeResponseInfo(&dto.ClaudeResponse{
+		Type:  "content_block_delta",
+		Index: commonPointer(0),
+		Delta: &dto.ClaudeMediaMessage{Type: "input_json_delta", PartialJson: &p1},
+	}, nil, claudeInfo))
+	require.True(t, FormatClaudeResponseInfo(&dto.ClaudeResponse{
+		Type:  "content_block_delta",
+		Index: commonPointer(0),
+		Delta: &dto.ClaudeMediaMessage{Type: "input_json_delta", PartialJson: &p2},
+	}, nil, claudeInfo))
+
+	assert.Equal(t, "", claudeInfo.ResponseText.String(), "tool_use 不应产生 text")
+	require.Len(t, claudeInfo.ToolUses, 1)
+	assert.Equal(t, "tool_1", claudeInfo.ToolUses[0].ID)
+	assert.Equal(t, "lookup", claudeInfo.ToolUses[0].Name)
+	assert.Equal(t, `{"loc":"x"}`, claudeInfo.ToolUses[0].Input.String())
+}
+
+// TestReconstructClaudeStreamResponse_ToolUse 验证纯 tool_use 响应也会聚合成
+// 单个 JSON 写回 content log，input_json_delta 片段被还原成对象，而不是保留原始 SSE。
+func TestReconstructClaudeStreamResponse_ToolUse(t *testing.T) {
+	prev := common.ContentLogEnabled
+	common.ContentLogEnabled = true
+	defer func() { common.ContentLogEnabled = prev }()
+
+	claudeInfo := &ClaudeResponseInfo{
+		ResponseId: "msg_1",
+		Model:      "ali_glm-5.2",
+		Usage:      &dto.Usage{PromptTokens: 10, CompletionTokens: 5},
+	}
+	claudeInfo.ToolUses = append(claudeInfo.ToolUses, ClaudeToolUseBlock{Index: 0, ID: "tool_1", Name: "lookup"})
+	claudeInfo.ToolUses[0].Input.WriteString(`{"loc":"x"}`)
+
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstreamResp := &service.HttpMessage{}
+	c.Set("_content_upstream_resp", upstreamResp)
+
+	reconstructClaudeStreamResponse(c, claudeInfo)
+
+	require.NotEmpty(t, upstreamResp.Body, "tool_use 响应应聚合出 body 而非保留原始 SSE")
+	var got map[string]interface{}
+	require.NoError(t, common.Unmarshal([]byte(upstreamResp.Body), &got))
+	assert.Equal(t, "message", got["type"])
+	content, ok := got["content"].([]interface{})
+	require.True(t, ok)
+	require.Len(t, content, 1)
+	block, ok := content[0].(map[string]interface{})
+	require.True(t, ok)
+	assert.Equal(t, "tool_use", block["type"])
+	assert.Equal(t, "tool_1", block["id"])
+	assert.Equal(t, "lookup", block["name"])
+	assert.Equal(t, map[string]interface{}{"loc": "x"}, block["input"])
+}
+
+// TestReconstructClaudeStreamResponse_EmptySkipped 验证既无文本也无 tool_use
+// 时仍跳过聚合，避免写出空 message。
+func TestReconstructClaudeStreamResponse_EmptySkipped(t *testing.T) {
+	prev := common.ContentLogEnabled
+	common.ContentLogEnabled = true
+	defer func() { common.ContentLogEnabled = prev }()
+
+	claudeInfo := &ClaudeResponseInfo{Model: "m"}
+	c, _ := gin.CreateTestContext(httptest.NewRecorder())
+	upstreamResp := &service.HttpMessage{Body: "keep"}
+	c.Set("_content_upstream_resp", upstreamResp)
+
+	reconstructClaudeStreamResponse(c, claudeInfo)
+	assert.Equal(t, "keep", upstreamResp.Body, "空响应不应覆盖 body")
 }

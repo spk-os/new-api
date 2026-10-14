@@ -9,8 +9,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HA_DIR="$(dirname "$SCRIPT_DIR")"
 BAK_DIR="$HA_DIR/bak"
-PG_CONTAINER="docker-db_postgres-1"
-PG_USER="postgres"
+PG_CONTAINER="spk-pg-prod"
+PG_USER="spk"
 PG_DB="new-api"
 MAX_BACKUPS=3
 MIN_AGE_HOURS=24
@@ -74,8 +74,18 @@ log "  dump 文件有效（$FILE_SIZE bytes）✓"
 # ============================================================
 log "Phase 4: 保留策略（最多 ${MAX_BACKUPS} 份，至少 1 份 >= ${MIN_AGE_HOURS}h）..."
 
-# 列出所有备份文件，按 mtime 排序（新→旧）
-mapfile -t ALL_BAKS < <(ls -t "$BAK_DIR"/pg_dump_*.sql 2>/dev/null || true)
+# images_*.txt 只保留最新 MAX_BACKUPS 份（升级时顺带存的镜像列表，价值低、随时可重列）
+mapfile -t ALL_IMAGES < <(ls -t "$BAK_DIR"/images_*.txt 2>/dev/null || true)
+if [[ ${#ALL_IMAGES[@]} -gt $MAX_BACKUPS ]]; then
+    for f in "${ALL_IMAGES[@]:$MAX_BACKUPS}"; do
+        rm -f "$f"
+        log "  删除镜像列表: $(basename "$f")"
+    done
+fi
+
+# 列出所有备份文件，按 mtime 排序（新→旧）。.sql 和 .sql.gz 统一参与保留策略，
+# 否则 .gz 会无限累积（docker exec pg_dump | gzip 产生的快照）。
+mapfile -t ALL_BAKS < <(ls -t "$BAK_DIR"/pg_dump_*.sql "$BAK_DIR"/pg_dump_*.sql.gz 2>/dev/null || true)
 
 if [[ ${#ALL_BAKS[@]} -le $MAX_BACKUPS ]]; then
     log "  当前仅 ${#ALL_BAKS[@]} 份备份，无需清理"

@@ -115,3 +115,20 @@ func RecordProviderFailureForChannel(c *gin.Context, channelId int) {
 		}
 	}
 }
+
+// ForceProviderCooldownForChannel maps a channel ID to its provider ID via
+// the gateway plan's candidate list and places the provider into cooldown
+// immediately (bypassing the failure threshold). No-op when no plan exists
+// or the channel is not in the plan.
+func ForceProviderCooldownForChannel(c *gin.Context, channelId int) {
+	plan := GetGatewayPlanFromContext(c)
+	if plan == nil {
+		return
+	}
+	for _, cand := range plan.Candidates {
+		if cand != nil && cand.ChannelId == channelId {
+			ForceProviderCooldown(cand.ProviderId)
+			return
+		}
+	}
+}

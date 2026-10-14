@@ -19,6 +19,7 @@ import (
 	relaycommon "github.com/QuantumNous/new-api/relay/common"
 	"github.com/QuantumNous/new-api/service"
 	"github.com/QuantumNous/new-api/service/authz"
+	"github.com/QuantumNous/new-api/service/gateway"
 
 	"github.com/gin-gonic/gin"
 	"gorm.io/gorm"
@@ -697,6 +698,15 @@ func AddChannel(c *gin.Context) {
 		common.ApiError(c, err)
 		return
 	}
+	// 渠道 → 网关 YAML 反向同步：新建的网关托管渠道回写 providers 条目，
+	// 避免下次 SaveConfig 时 YAML 覆盖/遗漏该渠道。失败只记日志不影响渠道创建。
+	for i := range channels {
+		if channels[i].GetTag() == gateway.GatewayTag {
+			if err := gateway.ReverseSyncChannel(&channels[i], ""); err != nil {
+				common.SysError("gateway reverse sync (channel create " + channels[i].Name + "): " + err.Error())
+			}
+		}
+	}
 	recordManageAudit(c, "channel.create", map[string]interface{}{
 		"name":  addChannelRequest.Channel.Name,
 		"type":  addChannelRequest.Channel.Type,
@@ -731,6 +741,10 @@ func DeleteChannel(c *gin.Context) {
 		service.ResetProxyClientCache()
 	} else {
 		service.InvalidateProxyClient(channelProxy)
+		// 渠道 → 网关 YAML 反向同步：同名 provider 条目随渠道删除移除。
+		if err := gateway.ReverseSyncChannelDelete(channelName); err != nil {
+			common.SysError("gateway reverse sync (channel delete " + channelName + "): " + err.Error())
+		}
 	}
 	recordManageAudit(c, "channel.delete", map[string]interface{}{
 		"id":   id,
@@ -776,6 +790,17 @@ type ChannelTag struct {
 	HeaderOverride *string `json:"header_override"`
 }
 
+// syncGatewayTagChannels 在 tag 级批量操作（启停/批量编辑）落库后触发
+// 渠道 → 网关 YAML 反向同步；仅网关托管 tag 生效，失败只记日志。
+func syncGatewayTagChannels(tag string) {
+	if tag != gateway.GatewayTag {
+		return
+	}
+	if err := gateway.ReverseSyncChannelsByTag(tag); err != nil {
+		common.SysError("gateway reverse sync (tag " + tag + "): " + err.Error())
+	}
+}
+
 func DisableTagChannels(c *gin.Context) {
 	channelTag := ChannelTag{}
 	err := c.ShouldBindJSON(&channelTag)
@@ -792,6 +817,7 @@ func DisableTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	syncGatewayTagChannels(channelTag.Tag)
 	recordManageAudit(c, "channel.tag_disable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
@@ -818,6 +844,7 @@ func EnableTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	syncGatewayTagChannels(channelTag.Tag)
 	recordManageAudit(c, "channel.tag_enable", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
@@ -878,6 +905,7 @@ func EditTagChannels(c *gin.Context) {
 		return
 	}
 	model.InitChannelCache()
+	syncGatewayTagChannels(channelTag.Tag)
 	recordManageAudit(c, "channel.tag_edit", map[string]interface{}{
 		"tag": channelTag.Tag,
 	})
@@ -903,6 +931,13 @@ func DeleteChannelBatch(c *gin.Context) {
 		})
 		return
 	}
+	// 删除前取渠道名，供反向同步从 YAML providers 中移除对应条目。
+	deletedNames := make([]string, 0, len(channelBatch.Ids))
+	for _, id := range channelBatch.Ids {
+		if ch, err := model.GetChannelById(id, false); err == nil && ch != nil {
+			deletedNames = append(deletedNames, ch.Name)
+		}
+	}
 	deletedCount, err := model.BatchDeleteChannels(channelBatch.Ids)
 	if err != nil {
 		common.ApiError(c, err)
@@ -911,6 +946,11 @@ func DeleteChannelBatch(c *gin.Context) {
 	model.InitChannelCache()
 	if deletedCount > 0 {
 		service.ResetProxyClientCache()
+		for _, name := range deletedNames {
+			if err := gateway.ReverseSyncChannelDelete(name); err != nil {
+				common.SysError("gateway reverse sync (channel delete " + name + "): " + err.Error())
+			}
+		}
 	}
 	recordManageAudit(c, "channel.delete_batch", map[string]interface{}{
 		"count": deletedCount,
@@ -1088,6 +1128,13 @@ func UpdateChannel(c *gin.Context) {
 	if proxyChanged {
 		service.InvalidateProxyClient(originProxy)
 	}
+	// 渠道 → 网关 YAML 反向同步：用更新后的完整渠道状态回写 providers 条目
+	//（oldName 传入支持渠道改名场景），防止下次 SaveConfig 覆盖控制台改动。
+	if updated, err := model.GetChannelById(channel.Id, true); err == nil && updated != nil {
+		if err := gateway.ReverseSyncChannel(updated, originChannel.Name); err != nil {
+			common.SysError("gateway reverse sync (channel update " + updated.Name + "): " + err.Error())
+		}
+	}
 	// 记录变更的字段名（语言无关的字段标识），密钥仅记录"已更换"绝不记录内容。
 	changedFields := make([]string, 0)
 	if channel.Models != originChannel.Models {
@@ -1134,6 +1181,12 @@ func UpdateChannelStatus(c *gin.Context) {
 	changed := model.UpdateChannelStatus(id, "", req.Status, "manual operation")
 	if changed {
 		model.InitChannelCache()
+		// 渠道 → 网关 YAML 反向同步：启停状态回写 provider 的 enabled 字段。
+		if ch, err := model.GetChannelById(id, true); err == nil && ch != nil {
+			if err := gateway.ReverseSyncChannel(ch, ""); err != nil {
+				common.SysError("gateway reverse sync (channel status " + ch.Name + "): " + err.Error())
+			}
+		}
 	}
 	recordManageAudit(c, "channel.status_update", map[string]interface{}{
 		"id":      id,
@@ -1157,6 +1210,12 @@ func BatchUpdateChannelStatus(c *gin.Context) {
 	for _, id := range req.Ids {
 		if model.UpdateChannelStatus(id, "", req.Status, "manual batch operation") {
 			changedCount++
+			// 渠道 → 网关 YAML 反向同步：批量启停同样回写 enabled 字段。
+			if ch, err := model.GetChannelById(id, true); err == nil && ch != nil {
+				if err := gateway.ReverseSyncChannel(ch, ""); err != nil {
+					common.SysError("gateway reverse sync (channel status " + ch.Name + "): " + err.Error())
+				}
+			}
 		}
 	}
 	if changedCount > 0 {

@@ -17,19 +17,20 @@ along with this program. If not, see <https://www.gnu.org/licenses/>.
 For commercial licensing, please contact support@quantumnous.com
 */
 import { createFileRoute, redirect } from '@tanstack/react-router'
-import { useAuthStore } from '@/stores/auth-store'
+
 import { ROLE } from '@/lib/roles'
+import { useAuthStore } from '@/stores/auth-store'
 
-export const Route = createFileRoute(
-  '/_authenticated/system-settings/gateway',
-)({
-  beforeLoad: () => {
-    const { auth } = useAuthStore.getState()
+export const Route = createFileRoute('/_authenticated/system-settings/gateway')(
+  {
+    beforeLoad: () => {
+      const { auth } = useAuthStore.getState()
 
-    if (auth.user?.role !== ROLE.SUPER_ADMIN) {
-      throw redirect({
-        to: '/403',
-      })
-    }
-  },
-})
+      if (auth.user?.role !== ROLE.SUPER_ADMIN) {
+        throw redirect({
+          to: '/403',
+        })
+      }
+    },
+  }
+)

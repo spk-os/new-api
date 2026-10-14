@@ -89,7 +89,9 @@ function getSystemSettingsNavGroups(t: TFunction): NavGroup[] {
         {
           title: t('Gateway Routing'),
           icon: Network,
-          items: [{ title: t('Configuration'), url: '/system-settings/gateway' }],
+          items: [
+            { title: t('Configuration'), url: '/system-settings/gateway' },
+          ],
         },
       ],
     },

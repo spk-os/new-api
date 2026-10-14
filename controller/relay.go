@@ -207,6 +207,10 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 	// consolidated log entry after the loop exits (success or failure).
 	setRetryLogSuppression(c, true)
 
+	// Quota-exhaustion failover is deterministic: skip the switch delay for
+	// the provider picked right after a quota-exhausted failure.
+	skipSwitchDelay := false
+
 	for ; retryParam.GetRetry() <= effectiveMaxRetries; retryParam.IncreaseRetry() {
 		relayInfo.RetryIndex = retryParam.GetRetry()
 
@@ -239,7 +243,7 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 			if channel == nil && channelErr == nil {
 				logger.LogInfo(c, fmt.Sprintf("retry %d/%d: channel #%d (%s) all keys exhausted, trying different channel",
 					retryParam.GetRetry(), effectiveMaxRetries, lastChannelId, lastChannelName))
-				if delay := gateway.GetProviderSwitchDelay(gwPlan); delay > 0 {
+				if delay := gateway.GetProviderSwitchDelay(gwPlan); delay > 0 && !skipSwitchDelay {
 					logger.LogInfo(c, fmt.Sprintf("retry %d/%d: provider switch delay %v", retryParam.GetRetry(), effectiveMaxRetries, delay))
 					time.Sleep(delay)
 				}
@@ -299,10 +303,15 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 
 		appendRetryAttempt(c, relayInfo, channel, newAPIError)
 
+		quotaExhausted := gateway.IsQuotaExhaustedError(newAPIError.StatusCode, newAPIError.Error())
+		skipSwitchDelay = quotaExhausted
+
 		if !shouldRetry(c, newAPIError, effectiveMaxRetries-retryParam.GetRetry()) {
 			break
 		}
-		if backoff := gateway.GetBackoffInterval(gwPlan, retryParam.GetRetry()); backoff > 0 {
+		// Quota exhaustion is deterministic — fail over to the next channel
+		// immediately instead of waiting out the backoff.
+		if backoff := gateway.GetBackoffInterval(gwPlan, retryParam.GetRetry()); backoff > 0 && !quotaExhausted {
 			logger.LogInfo(c, fmt.Sprintf("retry %d/%d: backoff %v before next attempt", retryParam.GetRetry(), effectiveMaxRetries, backoff))
 			time.Sleep(backoff)
 		}
@@ -422,6 +431,14 @@ func shouldRetry(c *gin.Context, openaiErr *types.NewAPIError, retryTimes int) b
 	if code >= 200 && code < 300 {
 		return false
 	}
+	// Quota exhaustion (e.g. DevEco 403 "used up your free quota") is
+	// permanent for this provider until the cycle resets. The provider is
+	// force-cooled in processChannelError; retrying here means failing over
+	// to another channel (tried/cooldown channels are excluded from
+	// selection). The loop fails only when no channel is left.
+	if gateway.IsQuotaExhaustedError(openaiErr.StatusCode, openaiErr.Error()) {
+		return true
+	}
 	if code < 100 || code > 599 {
 		return true
 	}
@@ -441,6 +458,14 @@ func processChannelError(c *gin.Context, channelError types.ChannelError, err *t
 	logger.LogError(c, fmt.Sprintf("channel error (channel #%d, status code: %d): %s", channelError.ChannelId, err.StatusCode, common.LocalLogPreview(err.Error())))
 	service.RecordChannelFailure(channelError.ChannelId, err.StatusCode)
 	gateway.RecordProviderFailureForChannel(c, channelError.ChannelId)
+	// Quota exhaustion is unrecoverable for this provider until the quota
+	// cycle resets — cool it down immediately (both provider-level for the
+	// gateway plan and channel-level for native channel selection) instead
+	// of waiting for the failure threshold.
+	if gateway.IsQuotaExhaustedError(err.StatusCode, err.Error()) {
+		gateway.ForceProviderCooldownForChannel(c, channelError.ChannelId)
+		service.ForceChannelCooldown(channelError.ChannelId)
+	}
 	// 不要使用context获取渠道信息，异步处理时可能会出现渠道信息不一致的情况
 	// do not use context to get channel info, there may be inconsistent channel info when processing asynchronously
 	if service.ShouldDisableChannel(err) && channelError.AutoBan {

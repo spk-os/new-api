@@ -80,6 +80,20 @@ export type LogFilters = CommonLogFilters | DrawingLogFilters | TaskLogFilters
 // ============================================================================
 
 /**
+ * One failed relay attempt within the retry loop, recorded by
+ * controller/relay_retry_log.go and attached to the consume log's 'other'
+ * field as retry_attempts (see model/log.go).
+ */
+export interface RetryAttemptInfo {
+  channel_id: number
+  channel_name: string
+  model_name: string
+  status_code: number
+  error_reason: string
+  use_time_seconds: number
+}
+
+/**
  * Parsed data from the 'other' field in usage logs
  */
 export interface ChannelAffinityInfo {
@@ -156,6 +170,11 @@ export interface LogOtherData {
   login_method?: string
   user_agent?: string
   request_path?: string
+  // Consolidated retry history from the relay retry loop (see
+  // controller/relay_retry_log.go): one entry per failed attempt,
+  // attached at the top level of 'other' by model/log.go.
+  retry_attempts?: RetryAttemptInfo[]
+  retry_count?: number
   request_conversion?: string[]
   ws?: boolean
   audio?: boolean

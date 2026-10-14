@@ -9,6 +9,54 @@ type GatewayYaml struct {
 	LLMGateway map[string]*StrategyGroup `yaml:"llm_gateway"` // key=group name (default, quality, efficient)
 	Providers  map[string]*Provider      `yaml:"providers"`   // key=providerId (zen, ali, nvidia_edu, etc.)
 	Cost       *CostConfig               `yaml:"cost"`
+	Alarm      *AlarmConfig              `yaml:"alarm"`
+
+	// ModelNameMapping is a global, ordered list of "pattern: replacement"
+	// rules. Before gateway routing and channel selection, the request's
+	// body `model` field is matched against each pattern in order; the first
+	// hit replaces the model name for the rest of the pipeline. A pattern
+	// ending in `*` matches by prefix (case-sensitive, e.g. `Sonnet*` matches
+	// `Sonnet-4`); any other pattern is an exact match. This runs regardless
+	// of GatewayRoutingEnabled — it is a new-api-global capability, not
+	// channel-scoped model_mapping. See ModelNameMappingMiddleware.
+	//
+	// When this field is nil (absent from the YAML), the compiled-in defaults
+	// (DefaultModelNameMapping) apply. Set it to an empty list (`[]`) to
+	// disable mapping entirely.
+	ModelNameMapping []string `yaml:"model_name_mapping"`
+}
+
+// AlarmConfig - token usage alarm thresholds and notification channel.
+// Lives at the top level of the gateway YAML (sibling of llm_gateway),
+// not nested under llm_gateway (which is a map of strategy groups).
+//
+// interval is the dedupe window in milliseconds: after an alarm of a given
+// kind fires, the same kind is suppressed for interval ms. Defaults to
+// 600000 (10 minutes) when unset, matching the "no repeat within 10 min"
+// requirement. FeishuWebhook, when empty, falls back to the compiled-in
+// spk-os-alarm default at runtime so the URL can be upgraded without
+// rebuilding.
+type AlarmConfig struct {
+	FeishuWebhook   string `yaml:"feishu-webhook"`
+	OneReqTokens    int64  `yaml:"one-req-tokens"`
+	TokensPerMinute int64  `yaml:"tokens-per-minute"`
+	Interval        int64  `yaml:"interval"`
+
+	// Loop-call detection — guards against a misbehaving client (e.g. a tool
+	// stuck in a retry loop) hammering the same model with near-identical
+	// large requests. The four operator-tunable thresholds below back the
+	// rule: within LoopWindowMs, LoopMinHits hits from the same client+model
+	// where each hit has tokens >= LoopMinTokens, response time <
+	// LoopMaxRespMs, and mutual request-size difference < LoopSizeDiffPct%
+	// mark the source as anomalous; subsequent hits from the same
+	// client+model meeting the token + size-diff criteria are penalised by
+	// sleeping LoopSleepMs before the response returns, and an alarm fires.
+	LoopMinTokens   int64   `yaml:"loop-min-tokens"`    // default 50000 (5W)
+	LoopSizeDiffPct float64 `yaml:"loop-size-diff-pct"` // default 1.0 (%)
+	LoopMaxRespMs   int64   `yaml:"loop-max-resp-ms"`   // default 5000 (5s)
+	LoopSleepMs     int64   `yaml:"loop-sleep-ms"`      // default 180000 (3 min)
+	LoopWindowMs    int64   `yaml:"loop-window-ms"`     // default 60000 (1 min)
+	LoopMinHits     int     `yaml:"loop-min-hits"`      // default 5
 }
 
 // StrategyGroup represents a named strategy group (default/quality/efficient).
@@ -18,15 +66,15 @@ type StrategyGroup struct {
 	LLMCommon *LLMCommon               `yaml:"llmCommon"`
 	Affinity  *AffinityConfig          `yaml:"affinity"`
 	Routing   *RoutingConfig           `yaml:"routing"`
-	Log       *LogConfig                `yaml:"log"`
+	Log       *LogConfig               `yaml:"log"`
 	Client    map[string]*ClientPolicy `yaml:"client"` // key=clientId
 }
 
 // LLMCommon contains global defaults for timeout, rate limiting, and retry.
 type LLMCommon struct {
-	Timeout         *Timeout         `yaml:"timeout"`
-	RateLimiting    *RateLimiting    `yaml:"rateLimiting"`
-	ProviderRetry   *ProviderRetry   `yaml:"providerRetry"`
+	Timeout       *Timeout       `yaml:"timeout"`
+	RateLimiting  *RateLimiting  `yaml:"rateLimiting"`
+	ProviderRetry *ProviderRetry `yaml:"providerRetry"`
 }
 
 // Timeout configuration.
@@ -38,8 +86,8 @@ type Timeout struct {
 
 // RateLimiting configuration.
 type RateLimiting struct {
-	Enabled          bool   `yaml:"enabled"`
-	Concurrency      int    `yaml:"concurrency"`
+	Enabled           bool   `yaml:"enabled"`
+	Concurrency       int    `yaml:"concurrency"`
 	WindowRate        string `yaml:"windowRate"`        // e.g. "1h-100"
 	OverLimitStrategy string `yaml:"overLimitStrategy"` // queue | downgrade | reject
 	QueueTimeout      int    `yaml:"queueTimeout"`      // seconds
@@ -47,50 +95,50 @@ type RateLimiting struct {
 
 // ProviderRetry contains retry and failover configuration.
 type ProviderRetry struct {
-	Enabled   bool            `yaml:"enabled"`
-	Model     *ModelRetry     `yaml:"model"`
-	Provider  *ProviderSwitch `yaml:"provider"`
-	Global    *GlobalRetry    `yaml:"global"`
+	Enabled  bool            `yaml:"enabled"`
+	Model    *ModelRetry     `yaml:"model"`
+	Provider *ProviderSwitch `yaml:"provider"`
+	Global   *GlobalRetry    `yaml:"global"`
 }
 
 // ModelRetry - per-model retry configuration.
 type ModelRetry struct {
-	MaxRetries             int   `yaml:"maxRetries"`
-	BackoffIntervals       []int `yaml:"backoffIntervals"`
-	RetryableStatusCodes   []int `yaml:"retryableStatusCodes"`
+	MaxRetries              int   `yaml:"maxRetries"`
+	BackoffIntervals        []int `yaml:"backoffIntervals"`
+	RetryableStatusCodes    []int `yaml:"retryableStatusCodes"`
 	NonRetryableStatusCodes []int `yaml:"nonRetryableStatusCodes"`
-	RetryOnTimeout         bool  `yaml:"retryOnTimeout"`
-	RetryByKey             bool  `yaml:"retryByKey"`
+	RetryOnTimeout          bool  `yaml:"retryOnTimeout"`
+	RetryByKey              bool  `yaml:"retryByKey"`
 }
 
 // ProviderSwitch - cross-provider switching rules.
 type ProviderSwitch struct {
-	SwitchDelay    int `yaml:"switchDelay"`    // seconds
-	CooldownPeriod int `yaml:"cooldownPeriod"` // seconds
+	SwitchDelay      int `yaml:"switchDelay"`    // seconds
+	CooldownPeriod   int `yaml:"cooldownPeriod"` // seconds
 	FailureThreshold int `yaml:"failureThreshold"`
-	FailureWindow  int `yaml:"failureWindow"`  // seconds
+	FailureWindow    int `yaml:"failureWindow"` // seconds
 }
 
 // GlobalRetry - global retry limits.
 type GlobalRetry struct {
-	MaxTotalRetries  int `yaml:"maxTotalRetries"`
-	MaxTotalTimeout  int `yaml:"maxTotalTimeout"` // seconds
+	MaxTotalRetries int `yaml:"maxTotalRetries"`
+	MaxTotalTimeout int `yaml:"maxTotalTimeout"` // seconds
 }
 
 // AffinityConfig - session affinity configuration.
 type AffinityConfig struct {
-	Enabled             bool                     `yaml:"enabled"`
-	ClientIdentification []ClientIdentRule       `yaml:"clientIdentification"`
-	TaskIdentification   []TaskIdentRule         `yaml:"taskIdentification"`
-	Binding             *AffinityBinding         `yaml:"binding"`
-	Failover            *AffinityFailover        `yaml:"failover"`
+	Enabled              bool              `yaml:"enabled"`
+	ClientIdentification []ClientIdentRule `yaml:"clientIdentification"`
+	TaskIdentification   []TaskIdentRule   `yaml:"taskIdentification"`
+	Binding              *AffinityBinding  `yaml:"binding"`
+	Failover             *AffinityFailover `yaml:"failover"`
 }
 
 // ClientIdentRule - how to identify the client.
 type ClientIdentRule struct {
-	Source   string `yaml:"source"`   // header | userAgent | token
-	Key      string `yaml:"key"`      // header name (for source=header)
-	Priority int    `yaml:"priority"`
+	Source   string      `yaml:"source"` // header | userAgent | token
+	Key      string      `yaml:"key"`    // header name (for source=header)
+	Priority int         `yaml:"priority"`
 	Patterns []UAPattern `yaml:"patterns"` // for source=userAgent
 }
 
@@ -102,35 +150,35 @@ type UAPattern struct {
 
 // TaskIdentRule - how to identify the task/session.
 type TaskIdentRule struct {
-	Source   string `yaml:"source"`   // header | body
-	Key      string `yaml:"key"`      // header name
+	Source   string   `yaml:"source"` // header | body
+	Key      string   `yaml:"key"`    // header name
 	Fields   []string `yaml:"fields"` // body field names
-	Priority int    `yaml:"priority"`
+	Priority int      `yaml:"priority"`
 }
 
 // AffinityBinding - binding storage configuration.
 type AffinityBinding struct {
-	TTL            int64  `yaml:"ttl"`            // seconds
-	MaxTTL         int64  `yaml:"maxTTL"`         // seconds
+	TTL            int64  `yaml:"ttl"`    // seconds
+	MaxTTL         int64  `yaml:"maxTTL"` // seconds
 	ExtendOnAccess bool   `yaml:"extendOnAccess"`
-	Storage        string `yaml:"storage"`        // redis | memory
+	Storage        string `yaml:"storage"` // redis | memory
 	KeyPattern     string `yaml:"keyPattern"`
 }
 
 // AffinityFailover - what to do when affinity-bound model fails.
 type AffinityFailover struct {
-	Enable        bool   `yaml:"enable"`
-	BreakAfterTimeout int `yaml:"breakAfterTimeout"` // seconds
-	Priority      string `yaml:"priority"`          // sameModel | sameProvider
-	NotifyClient  bool   `yaml:"notifyClient"`
-	NotifyHeader  string `yaml:"notifyHeader"`
+	Enable            bool   `yaml:"enable"`
+	BreakAfterTimeout int    `yaml:"breakAfterTimeout"` // seconds
+	Priority          string `yaml:"priority"`          // sameModel | sameProvider
+	NotifyClient      bool   `yaml:"notifyClient"`
+	NotifyHeader      string `yaml:"notifyHeader"`
 }
 
 // RoutingConfig - routing and model selection configuration.
 type RoutingConfig struct {
-	ModelSelection    *ModelSelection    `yaml:"modelSelection"`
+	ModelSelection    *ModelSelection        `yaml:"modelSelection"`
 	ModelAliases      map[string]interface{} `yaml:"modelAliases"` // string or []string
-	ModelCapabilities map[string][]string `yaml:"modelCapabilities"`
+	ModelCapabilities map[string][]string    `yaml:"modelCapabilities"`
 }
 
 // ModelSelection - strategy for choosing models.
@@ -158,7 +206,7 @@ type ClientPolicy struct {
 type Provider struct {
 	Name         string        `yaml:"name"`
 	URL          string        `yaml:"url"`
-	Key          string        `yaml:"key"` // comma-separated multi-key
+	Key          string        `yaml:"key"`         // comma-separated multi-key
 	ChannelType  int           `yaml:"channelType"` // New API channel type constant (1=OpenAI, 17=Ali, 26=Zhipu_v4, 45=VolcEngine etc.)
 	Order        int           `yaml:"order"`
 	Enabled      bool          `yaml:"enabled"`
@@ -197,11 +245,11 @@ type ModelCost struct {
 
 // EffectiveProfile is the merged result of five-layer strategy resolution.
 type EffectiveProfile struct {
-	Timeout            *Timeout
-	RateLimiting       *RateLimiting
-	ProviderRetry      *ProviderRetry
-	Affinity           *AffinityConfig
-	Routing            *RoutingConfig
+	Timeout               *Timeout
+	RateLimiting          *RateLimiting
+	ProviderRetry         *ProviderRetry
+	Affinity              *AffinityConfig
+	Routing               *RoutingConfig
 	ProviderOrderOverride map[string]int // client overrides for provider order
 }
 
@@ -226,53 +274,53 @@ type Candidate struct {
 
 // GatewayPlan holds the execution plan for a request.
 type GatewayPlan struct {
-	Profile      *EffectiveProfile
-	Retry        *ProviderRetry
-	Candidates   []*Candidate
-	AffinityHit  bool // true if affinity binding was found and prepended
-	Affinity     *AffinityConfig
+	Profile     *EffectiveProfile
+	Retry       *ProviderRetry
+	Candidates  []*Candidate
+	AffinityHit bool // true if affinity binding was found and prepended
+	Affinity    *AffinityConfig
 }
 
 // AffinityBindingRecord is a stored affinity binding.
 type AffinityBindingRecord struct {
-	ClientId      string
-	TaskId        string
-	ProviderId    string
-	ProviderName  string
-	ChannelId     int
-	KeyIndex      int
-	ActualModel   string
-	ModelGroup    string
-	BoundAt       time.Time
-	ExpiresAt     time.Time
-	Broken        bool
-	OrigProvider  string // before failover
-	OrigModel     string // before failover
+	ClientId     string
+	TaskId       string
+	ProviderId   string
+	ProviderName string
+	ChannelId    int
+	KeyIndex     int
+	ActualModel  string
+	ModelGroup   string
+	BoundAt      time.Time
+	ExpiresAt    time.Time
+	Broken       bool
+	OrigProvider string // before failover
+	OrigModel    string // before failover
 }
 
 // ProviderHealth tracks provider failure state.
 type ProviderHealth struct {
-	FailureCount   int
-	CooldownUntil  time.Time
+	FailureCount       int
+	CooldownUntil      time.Time
 	FailureWindowStart time.Time
 }
 
 // ApplyResult from SaveConfig.
 type ApplyResult struct {
-	Applied         bool     `json:"applied"`
-	ChannelsCreated []string `json:"channels_created"`
-	ChannelsUpdated []string `json:"channels_updated"`
+	Applied          bool     `json:"applied"`
+	ChannelsCreated  []string `json:"channels_created"`
+	ChannelsUpdated  []string `json:"channels_updated"`
 	ChannelsDisabled []string `json:"channels_disabled"`
-	PricingUpdated  int      `json:"pricing_updated"`
-	EffectiveAt     string   `json:"effective_at"`
-	Errors          []string `json:"errors,omitempty"`
+	PricingUpdated   int      `json:"pricing_updated"`
+	EffectiveAt      string   `json:"effective_at"`
+	Errors           []string `json:"errors,omitempty"`
 }
 
 // SyncResult from channel sync.
 type SyncResult struct {
-	Created   []string
-	Updated   []string
-	Disabled  []string
+	Created  []string
+	Updated  []string
+	Disabled []string
 }
 
 // CostSyncResult from cost sync.
@@ -282,22 +330,22 @@ type CostSyncResult struct {
 
 // RoutePreviewResult from route preview API.
 type RoutePreviewResult struct {
-	Group        string       `json:"group"`
-	ClientId     string       `json:"client_id"`
-	Model        string       `json:"model"`
-	Strategy     string       `json:"strategy"`
-	Candidates   []*Candidate `json:"candidates"`
-	AffinityHit  bool         `json:"affinity_hit"`
+	Group           string                 `json:"group"`
+	ClientId        string                 `json:"client_id"`
+	Model           string                 `json:"model"`
+	Strategy        string                 `json:"strategy"`
+	Candidates      []*Candidate           `json:"candidates"`
+	AffinityHit     bool                   `json:"affinity_hit"`
 	AffinityBinding *AffinityBindingRecord `json:"affinity_binding,omitempty"`
 }
 
 // GatewayStats for stats API.
 type GatewayStats struct {
-	TotalRequests     int64            `json:"total_requests"`
-	AffinityHits      int64            `json:"affinity_hits"`
-	AffinityMisses    int64            `json:"affinity_misses"`
-	ModelSwitches     int64            `json:"model_switches"`
-	ProviderRequests  map[string]int64 `json:"provider_requests"`
-	ModelRequests     map[string]int64 `json:"model_requests"`
-	RetryCounts       map[string]int64 `json:"retry_counts"`
+	TotalRequests    int64            `json:"total_requests"`
+	AffinityHits     int64            `json:"affinity_hits"`
+	AffinityMisses   int64            `json:"affinity_misses"`
+	ModelSwitches    int64            `json:"model_switches"`
+	ProviderRequests map[string]int64 `json:"provider_requests"`
+	ModelRequests    map[string]int64 `json:"model_requests"`
+	RetryCounts      map[string]int64 `json:"retry_counts"`
 }

@@ -99,6 +99,87 @@ func TestParseAndValidate_Empty(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestParseAndValidate_AlarmDefaultsWhenOmitted(t *testing.T) {
+	resetGlobalState(t)
+	cfg, err := ParseAndValidate(validYAML)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alarm)
+	assert.Equal(t, int64(defaultAlarmOneReqTokens), cfg.Alarm.OneReqTokens)
+	assert.Equal(t, int64(defaultAlarmTokensPerMinute), cfg.Alarm.TokensPerMinute)
+	assert.Equal(t, int64(defaultAlarmIntervalMs), cfg.Alarm.Interval)
+	assert.Empty(t, cfg.Alarm.FeishuWebhook, "empty webhook must stay empty so runtime falls back to the compiled-in default")
+}
+
+func TestParseAndValidate_AlarmExplicitValuesPreserved(t *testing.T) {
+	resetGlobalState(t)
+	src := validYAML + `
+alarm:
+  one-req-tokens: 500000
+  tokens-per-minute: 5000000
+  interval: 300000
+  feishu-webhook: https://example.com/hook
+`
+	cfg, err := ParseAndValidate(src)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alarm)
+	assert.Equal(t, int64(500000), cfg.Alarm.OneReqTokens)
+	assert.Equal(t, int64(5000000), cfg.Alarm.TokensPerMinute)
+	assert.Equal(t, int64(300000), cfg.Alarm.Interval)
+	assert.Equal(t, "https://example.com/hook", cfg.Alarm.FeishuWebhook)
+}
+
+func TestParseAndValidate_AlarmLoopDefaultsWhenOmitted(t *testing.T) {
+	resetGlobalState(t)
+	cfg, err := ParseAndValidate(validYAML)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alarm)
+	assert.Equal(t, int64(defaultAlarmLoopMinTokens), cfg.Alarm.LoopMinTokens)
+	assert.Equal(t, defaultAlarmLoopSizeDiffPct, cfg.Alarm.LoopSizeDiffPct)
+	assert.Equal(t, int64(defaultAlarmLoopMaxRespMs), cfg.Alarm.LoopMaxRespMs)
+	assert.Equal(t, int64(defaultAlarmLoopSleepMs), cfg.Alarm.LoopSleepMs)
+	assert.Equal(t, int64(defaultAlarmLoopWindowMs), cfg.Alarm.LoopWindowMs)
+	assert.Equal(t, defaultAlarmLoopMinHits, cfg.Alarm.LoopMinHits)
+}
+
+func TestParseAndValidate_AlarmLoopExplicitValuesPreserved(t *testing.T) {
+	resetGlobalState(t)
+	src := validYAML + `
+alarm:
+  loop-min-tokens: 80000
+  loop-size-diff-pct: 5
+  loop-max-resp-ms: 3000
+  loop-sleep-ms: 600000
+  loop-window-ms: 120000
+  loop-min-hits: 5
+`
+	cfg, err := ParseAndValidate(src)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alarm)
+	assert.Equal(t, int64(80000), cfg.Alarm.LoopMinTokens)
+	assert.Equal(t, 5.0, cfg.Alarm.LoopSizeDiffPct)
+	assert.Equal(t, int64(3000), cfg.Alarm.LoopMaxRespMs)
+	assert.Equal(t, int64(600000), cfg.Alarm.LoopSleepMs)
+	assert.Equal(t, int64(120000), cfg.Alarm.LoopWindowMs)
+	assert.Equal(t, 5, cfg.Alarm.LoopMinHits)
+}
+
+// TestParseAndValidate_AlarmLoopFractionalSizeDiffPct locks the int→float64
+// field fix: a fractional 0.2 must survive parsing instead of being silently
+// truncated to 0 (then masked back to the default 1 by the zero-fill). Under
+// the old int field, yaml parsed 0.2 into int as 0 and the operator's tighter
+// threshold was lost — the runtime used 1%.
+func TestParseAndValidate_AlarmLoopFractionalSizeDiffPct(t *testing.T) {
+	resetGlobalState(t)
+	src := validYAML + `
+alarm:
+  loop-size-diff-pct: 0.2
+`
+	cfg, err := ParseAndValidate(src)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Alarm)
+	assert.Equal(t, 0.2, cfg.Alarm.LoopSizeDiffPct, "fractional threshold must be preserved, not truncated to 0")
+}
+
 func TestParseAndValidate_MissingLLMGateway(t *testing.T) {
 	resetGlobalState(t)
 	_, err := ParseAndValidate("providers:\n  zen:\n    name: zen\n    url: https://x\n    key: sk-1\n")

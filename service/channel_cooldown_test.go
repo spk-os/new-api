@@ -104,3 +104,30 @@ func TestFailureWindowResets(t *testing.T) {
 	RecordChannelFailure(1, 500)
 	assert.False(t, IsChannelInCooldown(1), "failure count should reset after window expires")
 }
+
+func TestForceChannelCooldown_BypassesFailureThreshold(t *testing.T) {
+	resetCooldownState()
+	now := time.Now()
+	setNow(now)
+
+	// A single 403 quota-exhaustion failure must cool the channel at once,
+	// unlike ordinary 403s which need GeneralFailureThreshold failures.
+	RecordChannelFailure(24, 403)
+	assert.False(t, IsChannelInCooldown(24), "single ordinary 403 should not trigger cooldown")
+
+	ForceChannelCooldown(24)
+	assert.True(t, IsChannelInCooldown(24))
+	assert.Contains(t, GetCooldownChannelIds(), 24)
+
+	// Cooldown expires automatically like threshold-based cooldowns.
+	setNow(now.Add(time.Duration(CooldownDurationSec+1) * time.Second))
+	assert.False(t, IsChannelInCooldown(24), "forced cooldown should expire after duration")
+}
+
+func TestForceChannelCooldown_ZeroAndNegativeIdsAreNoop(t *testing.T) {
+	resetCooldownState()
+
+	ForceChannelCooldown(0)
+	ForceChannelCooldown(-1)
+	assert.Empty(t, GetCooldownChannelIds())
+}

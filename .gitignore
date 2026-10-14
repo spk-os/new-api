@@ -46,3 +46,9 @@ ha/bak/
 ha/logs/
 ha/nginx/logs/
 ha/nginx/*.bak.*
+
+# Local backup snapshots (secrets/DB/config) — never commit
+/bak/
+ha/.env.ha.bak.*
+.dockerignore.bak.*
+/target/

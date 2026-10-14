@@ -10,3 +10,8 @@ docs
 /web/node_modules
 /web/dist
 !THIRD-PARTY-LICENSES.md
+# SPK-OS 补充排除（2026-09-08）：减少 Build Cache 暴涨
+ha/
+bak/
+target/
+.gocache/

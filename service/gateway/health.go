@@ -81,6 +81,29 @@ func RecordProviderFailure(providerId string) {
 	providerHealthMap.Store(providerId, h)
 }
 
+// ForceProviderCooldown places a provider into cooldown immediately,
+// bypassing the failure threshold. Used for unrecoverable upstream errors
+// (e.g. quota exhaustion) where retrying the same provider is pointless.
+func ForceProviderCooldown(providerId string) {
+	if providerId == "" {
+		return
+	}
+	_, _, cooldownSec := healthDefaults()
+
+	healthMu.Lock()
+	defer healthMu.Unlock()
+
+	var h *ProviderHealth
+	if v, ok := providerHealthMap.Load(providerId); ok {
+		h, _ = v.(*ProviderHealth)
+	}
+	if h == nil {
+		h = &ProviderHealth{}
+	}
+	h.CooldownUntil = nowFunc().Add(time.Duration(cooldownSec) * time.Second)
+	providerHealthMap.Store(providerId, h)
+}
+
 // IsProviderInCooldown reports whether the provider is currently cooling down.
 func IsProviderInCooldown(providerId string) bool {
 	if providerId == "" {

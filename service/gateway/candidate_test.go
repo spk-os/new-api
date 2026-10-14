@@ -2,6 +2,9 @@ package gateway
 
 import (
 	"testing"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func twoProviderConfig() *GatewayYaml {
@@ -251,6 +254,43 @@ func TestSplitCSV(t *testing.T) {
 		if got[i] != want[i] {
 			t.Errorf("[%d] got %q want %q", i, got[i], want[i])
 		}
+	}
+}
+
+func TestSplitCSVQuotedSegments(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		want []string
+	}{
+		{
+			name: "普通多段与旧行为一致",
+			in:   " a , b,, c ",
+			want: []string{"a", "b", "c"},
+		},
+		{
+			name: "引号段还原含逗号 JSON",
+			in:   `"{""accessToken"":""a,b""}",sk-plain`,
+			want: []string{`{"accessToken":"a,b"}`, "sk-plain"},
+		},
+		{
+			name: "引号段内空格保留",
+			in:   `"  spaced  ",x`,
+			want: []string{"  spaced  ", "x"},
+		},
+		{name: "空串", in: "", want: nil},
+		{name: "纯空白", in: "   ", want: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := splitCSV(tt.in)
+			if tt.want == nil {
+				assert.Empty(t, got)
+				return
+			}
+			require.Len(t, got, len(tt.want))
+			assert.Equal(t, tt.want, got)
+		})
 	}
 }
 

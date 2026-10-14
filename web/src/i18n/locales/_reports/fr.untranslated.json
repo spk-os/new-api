@@ -1,0 +1,12 @@
+{
+  "Stick same task to same provider/model": "Stick same task to same provider/model",
+  "Automatically sync providers to New API channels": "Automatically sync providers to New API channels",
+  "Sync Cost to Billing": "Sync Cost to Billing",
+  "Sync cost config to New API pricing system": "Sync cost config to New API pricing system",
+  "Configuration saved and applied successfully": "Configuration saved and applied successfully",
+  "Failed to apply configuration": "Failed to apply configuration",
+  "Channel and cost sync completed": "Channel and cost sync completed",
+  "Sync completed with errors": "Sync completed with errors",
+  "Failed to update routing toggle": "Failed to update routing toggle",
+  "Failed to load gateway config": "Failed to load gateway config"
+}
