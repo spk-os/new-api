@@ -56,24 +56,41 @@ func GatewayStrategyMiddleware() gin.HandlerFunc {
 		if common.GatewayAffinityEnabled && prof.Affinity != nil && prof.Affinity.Enabled && stickyEnabled(opts, c) && clientId != "" && taskId != "" {
 			if rec := GetAffinityBinding(clientId, taskId); rec != nil && !rec.Broken {
 				if cand := candidateFromBinding(cfg, rec, prof); cand != nil {
-					plan = &GatewayPlan{
-						Profile:     prof,
-						Retry:       prof.ProviderRetry,
-						Candidates:  []*Candidate{cand},
-						AffinityHit: true,
-						Affinity:    prof.Affinity,
-					}
-					stickyHit = true
-					if prof.Affinity.Binding != nil && prof.Affinity.Binding.ExtendOnAccess {
-						ttl := time.Duration(prof.Affinity.Binding.TTL) * time.Second
-						maxTTL := time.Duration(prof.Affinity.Binding.MaxTTL) * time.Second
-						ExtendAffinityBinding(rec, ttl, maxTTL)
+					// Daily tier drift check: a circuit-broken sticky provider
+					// must always be dropped, and a healthy one is dropped when
+					// it trails the best reachable tier by more than one
+					// (one-tier gap keeps the session sticky).
+					if shouldBreakAffinityByDailyTier(cand, prof, requestedModel, opts) {
+						BreakAffinityBinding(clientId, taskId)
+					} else {
+						plan = &GatewayPlan{
+							Profile:     prof,
+							Retry:       prof.ProviderRetry,
+							Candidates:  []*Candidate{cand},
+							AffinityHit: true,
+							Affinity:    prof.Affinity,
+						}
+						stickyHit = true
+						if prof.Affinity.Binding != nil && prof.Affinity.Binding.ExtendOnAccess {
+							ttl := time.Duration(prof.Affinity.Binding.TTL) * time.Second
+							maxTTL := time.Duration(prof.Affinity.Binding.MaxTTL) * time.Second
+							ExtendAffinityBinding(rec, ttl, maxTTL)
+						}
 					}
 				}
 			}
 		}
 		if plan == nil {
 			cands := BuildCandidates(prof, requestedModel, opts)
+			// Daily token-tier scheduling: reorder by today's usage tier
+			// (outranks the static order) and drop circuit-broken providers.
+			// When every candidate is broken, short-circuit with 403 — the
+			// request must not fall through to the native channel path.
+			cands, allBroken := ApplyDailyTierScheduling(cands)
+			if allBroken {
+				abortWithGatewayDailyTierBroken(c, requestedModel)
+				return
+			}
 			// Session balancing: spread distinct sessions across equal-priority
 			// providers (reorders the first equal-priority block in place).
 			if sid := ExtractSessionId(c); sid != "" {

@@ -582,3 +582,45 @@ func TestRegisterGatewayOptionHooks_NoPanic(t *testing.T) {
 	resetGlobalState(t)
 	assert.NotPanics(t, func() { RegisterGatewayOptionHooks() })
 }
+
+func TestParseAndValidate_DailyTokenTiers(t *testing.T) {
+	valid := strings.Replace(validYAML, "providers:", "daily_token_tiers: [5000, 10000, 15000, 20000]\nproviders:", 1)
+	cfg, err := ParseAndValidate(valid)
+	require.NoError(t, err)
+	assert.Equal(t, []float64{5000, 10000, 15000, 20000}, cfg.DailyTokenTiers)
+
+	// provider-level override and explicit disable parse independently
+	withProv := strings.Replace(valid, "  zen:", "  zen:\n    dailyTokenTiers: [1000]", 1)
+	cfg, err = ParseAndValidate(withProv)
+	require.NoError(t, err)
+	assert.Equal(t, []float64{1000}, cfg.Providers["zen"].DailyTokenTiers)
+
+	disabled := strings.Replace(valid, "  zen:", "  zen:\n    dailyTokenTiers: []", 1)
+	cfg, err = ParseAndValidate(disabled)
+	require.NoError(t, err)
+	assert.Equal(t, []float64{}, cfg.Providers["zen"].DailyTokenTiers)
+
+	for _, tc := range []struct {
+		name   string
+		tiers  string
+		field  string
+		inProv bool
+	}{
+		{"negative global", "daily_token_tiers: [5000, -1]", "daily_token_tiers", false},
+		{"zero global", "daily_token_tiers: [0]", "daily_token_tiers", false},
+		{"negative provider", "dailyTokenTiers: [-0.5]", "providers.zen.dailyTokenTiers", true},
+		{"zero provider", "dailyTokenTiers: [1000, 0]", "providers.zen.dailyTokenTiers", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			src := validYAML
+			if tc.inProv {
+				src = strings.Replace(src, "  zen:", "  zen:\n    "+tc.tiers, 1)
+			} else {
+				src = strings.Replace(src, "providers:", tc.tiers+"\nproviders:", 1)
+			}
+			_, err := ParseAndValidate(src)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tc.field)
+		})
+	}
+}

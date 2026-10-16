@@ -24,6 +24,16 @@ type GatewayYaml struct {
 	// (DefaultModelNameMapping) apply. Set it to an empty list (`[]`) to
 	// disable mapping entirely.
 	ModelNameMapping []string `yaml:"model_name_mapping"`
+
+	// DailyTokenTiers is the global default daily token usage ladder, in W
+	// (10k tokens) units, e.g. [5000, 10000, 15000, 20000] = 5000W..20000W.
+	// Providers exceeding a tier are demoted below providers still inside a
+	// lower tier (tier scheduling outranks the static order); providers
+	// reaching the highest tier are circuit-broken. Provider-level
+	// dailyTokenTiers replaces this global default entirely (empty list `[]`
+	// = explicitly disabled for that provider; absent = inherit global).
+	// Empty/nil globally = feature off, zero behavior change.
+	DailyTokenTiers []float64 `yaml:"daily_token_tiers"`
 }
 
 // AlarmConfig - token usage alarm thresholds and notification channel.
@@ -214,6 +224,13 @@ type Provider struct {
 	RateLimiting *RateLimiting `yaml:"rateLimiting"`
 	Timeout      *Timeout      `yaml:"timeout"`
 	Models       []*ModelGroup `yaml:"models"`
+
+	// DailyTokenTiers overrides the global daily_token_tiers for this
+	// provider (unit: W). Non-nil replaces the global list entirely; an
+	// empty non-nil list (`dailyTokenTiers: []`) explicitly disables daily
+	// tier scheduling/circuit-breaking for this provider; nil inherits the
+	// global default. See GatewayYaml.DailyTokenTiers.
+	DailyTokenTiers []float64 `yaml:"dailyTokenTiers"`
 }
 
 // ModelGroup - a group of models within a provider.
@@ -270,6 +287,7 @@ type Candidate struct {
 	ModelGroup   string   // "free"
 	ActualModel  string   // "minimax-m3-free"
 	IsFree       bool     // modelGroup.Tags contains "free"
+	DailyTier    int      // today's token-usage tier (0 = first tier or feature off)
 }
 
 // GatewayPlan holds the execution plan for a request.
@@ -337,6 +355,15 @@ type RoutePreviewResult struct {
 	Candidates      []*Candidate           `json:"candidates"`
 	AffinityHit     bool                   `json:"affinity_hit"`
 	AffinityBinding *AffinityBindingRecord `json:"affinity_binding,omitempty"`
+	// DailyTierScheduling reflects the daily token-tier pass: allBroken=true
+	// means every candidate reached its highest tier and live traffic would
+	// answer 403 GATEWAY_DAILY_TIER_CIRCUIT_BROKEN.
+	DailyTierScheduling *RoutePreviewDailyTier `json:"daily_tier_scheduling,omitempty"`
+}
+
+// RoutePreviewDailyTier summarises the daily-tier pass for the preview API.
+type RoutePreviewDailyTier struct {
+	AllBroken bool `json:"all_broken"`
 }
 
 // GatewayStats for stats API.

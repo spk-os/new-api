@@ -369,3 +369,23 @@ func TestReverseSyncChannel_MalformedConfigNotOverwritten(t *testing.T) {
 	require.NoError(t, ReverseSyncChannel(managedChannel(), ""))
 	assert.True(t, strings.HasPrefix(readReverseSyncYAML(t, path), "llm_gateway:"))
 }
+
+func TestReverseSyncChannel_PreservesDailyTokenTiers(t *testing.T) {
+	baseYAML := strings.Replace(reverseSyncBaseYAML,
+		"providers:",
+		"daily_token_tiers: [5000, 10000, 15000, 20000]\nproviders:", 1)
+	baseYAML = strings.Replace(baseYAML,
+		"  alpha:\n    name: alpha",
+		"  alpha:\n    dailyTokenTiers: [1000]\n    name: alpha", 1)
+
+	path := setupReverseSyncTest(t, baseYAML)
+	require.NoError(t, ReverseSyncChannel(managedChannel(), ""))
+
+	out := readReverseSyncYAML(t, path)
+	cfg, err := ParseAndValidate(out)
+	require.NoError(t, err, "reverse-synced yaml must still validate")
+	assert.Equal(t, []float64{5000, 10000, 15000, 20000}, cfg.DailyTokenTiers,
+		"top-level daily_token_tiers survives the node-tree edit")
+	assert.Equal(t, []float64{1000}, cfg.Providers["alpha"].DailyTokenTiers,
+		"provider-level dailyTokenTiers survives the node-tree edit")
+}

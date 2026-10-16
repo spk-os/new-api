@@ -116,17 +116,22 @@ func PreviewGatewayRoute(c *gin.Context) {
 
 	candidates := gateway.BuildCandidates(profile, req.Model, nil)
 
+	// Mirror the live GatewayStrategyMiddleware daily-tier pass so operators
+	// can verify tier ordering and circuit-breaking before enabling limits.
+	candidates, allBroken := gateway.ApplyDailyTierScheduling(candidates)
+
 	strategy := "priority"
 	if profile.Routing != nil && profile.Routing.ModelSelection != nil && profile.Routing.ModelSelection.Strategy != "" {
 		strategy = profile.Routing.ModelSelection.Strategy
 	}
 
 	c.JSON(http.StatusOK, &gateway.RoutePreviewResult{
-		Group:      req.Group,
-		ClientId:   req.ClientId,
-		Model:      req.Model,
-		Strategy:   strategy,
-		Candidates: candidates,
+		Group:               req.Group,
+		ClientId:            req.ClientId,
+		Model:               req.Model,
+		Strategy:            strategy,
+		Candidates:          candidates,
+		DailyTierScheduling: &gateway.RoutePreviewDailyTier{AllBroken: allBroken},
 	})
 }
 

@@ -196,9 +196,9 @@ func sendFeishuAlarm(webhookURL, title, detail string) error {
 	return nil
 }
 
-// init registers checkTokenAlarm as the post-consume-log hook. Defined in the
-// model package as a var (model cannot import service without a cycle), set
+// init registers checkTokenAlarm as a post-consume-log hook. Defined in the
+// model package as vars (model cannot import service without a cycle), set
 // here where service→model is the natural direction.
 func init() {
-	model.AfterRecordConsumeLogHook = checkTokenAlarm
+	model.RegisterAfterRecordConsumeLogHook(checkTokenAlarm)
 }

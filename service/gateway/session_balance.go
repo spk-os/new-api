@@ -67,9 +67,17 @@ func SessionBalanceCandidates(cands []*Candidate, sessionId string) {
 		return
 	}
 
+	// Block boundary is the (daily tier, provider order) pair: daily tier
+	// scheduling sorts candidates by today's usage tier first (stable, so the
+	// order sequence inside a tier is preserved), and sessions must not be
+	// balanced across different tiers or orders. When tiers are off every
+	// candidate has DailyTier 0, which reduces to the historical
+	// same-order-only boundary.
+	blockTier := cands[0].DailyTier
 	blockOrder := effectiveProviderOrder(cands[0].ProviderId, nil)
 	blockEnd := 1
-	for blockEnd < len(cands) && effectiveProviderOrder(cands[blockEnd].ProviderId, nil) == blockOrder {
+	for blockEnd < len(cands) && cands[blockEnd].DailyTier == blockTier &&
+		effectiveProviderOrder(cands[blockEnd].ProviderId, nil) == blockOrder {
 		blockEnd++
 	}
 	if blockEnd <= 1 {

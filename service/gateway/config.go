@@ -196,6 +196,19 @@ const (
 	defaultAlarmLoopMinHits           = 5
 )
 
+// validateDailyTokenTiers checks a daily_token_tiers / dailyTokenTiers list:
+// every tier must be a positive W value (0 and negatives would make the tier
+// boundary meaningless). Ordering is not enforced here — effectiveTierTokens
+// sorts and dedups at use time. An empty/nil list is valid (feature off).
+func validateDailyTokenTiers(field string, tiers []float64) error {
+	for i, t := range tiers {
+		if t <= 0 {
+			return fmt.Errorf("gateway config: %s[%d] must be a positive number (got %v)", field, i, t)
+		}
+	}
+	return nil
+}
+
 func validate(cfg *GatewayYaml) error {
 	if len(cfg.LLMGateway) == 0 {
 		return errors.New("gateway config: llm_gateway is required")
@@ -223,9 +236,15 @@ func validate(cfg *GatewayYaml) error {
 	if len(cfg.Providers) == 0 {
 		return errors.New("gateway config: providers is required")
 	}
+	if err := validateDailyTokenTiers("daily_token_tiers", cfg.DailyTokenTiers); err != nil {
+		return err
+	}
 	for id, prov := range cfg.Providers {
 		if prov == nil {
 			return fmt.Errorf("gateway config: providers.%s is null", id)
+		}
+		if err := validateDailyTokenTiers(fmt.Sprintf("providers.%s.dailyTokenTiers", id), prov.DailyTokenTiers); err != nil {
+			return err
 		}
 		if strings.TrimSpace(prov.Name) == "" {
 			return fmt.Errorf("gateway config: providers.%s.name is required", id)

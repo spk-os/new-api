@@ -170,3 +170,29 @@ func TestExtractSessionId(t *testing.T) {
 	c = makeCtx(map[string]string{"X-Claude-Code-Session-Id": "primary", "X-Session-Id": "alias"})
 	assert.Equal(t, "primary", ExtractSessionId(c))
 }
+
+func TestSessionBalance_TierBoundaryStopsReorder(t *testing.T) {
+	resetSessionBalanceState(t)
+	twoProvidersSameOrder(t)
+
+	// Same tier + same order → the bound provider moves to the front.
+	bindSessionToProvider("sess-tier", "deveco9227", sessionNowFunc())
+	cands := []*Candidate{
+		{ProviderId: "deveco6506", DailyTier: 0},
+		{ProviderId: "deveco9227", DailyTier: 0},
+	}
+	SessionBalanceCandidates(cands, "sess-tier")
+	assert.Equal(t, "deveco9227", cands[0].ProviderId, "same (tier, order) block is balanced")
+
+	// Different tier → the block ends at the first candidate; the bound
+	// provider outside the block must not be pulled to the front.
+	resetSessionBalanceState(t)
+	bindSessionToProvider("sess-tier2", "deveco9227", sessionNowFunc())
+	cands = []*Candidate{
+		{ProviderId: "deveco6506", DailyTier: 0},
+		{ProviderId: "deveco9227", DailyTier: 1},
+		{ProviderId: "mimo", DailyTier: 1},
+	}
+	SessionBalanceCandidates(cands, "sess-tier2")
+	assert.Equal(t, "deveco6506", cands[0].ProviderId, "tier boundary stops the reorder")
+}

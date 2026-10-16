@@ -344,17 +344,28 @@ type RecordConsumeLogParams struct {
 
 // LoopClientCtxKey is the context key under which RecordConsumeLog stores the
 // resolved client identity (X-Agent-Name / User-Agent + ClientIDResolver) for
-// the AfterRecordConsumeLogHook. Defined here so both the setter (model) and
+// the AfterRecordConsumeLogHooks. Defined here so both the setter (model) and
 // the reader (service loop-call detection) share one source of truth.
 const LoopClientCtxKey = "_loop_resolved_client"
 
-// AfterRecordConsumeLogHook is invoked at the end of RecordConsumeLog (after
-// the consume log row and quota_data are written). It is defined as a package
-// var rather than a direct call so model does not need to import service (the
-// alarm implementation lives in the service package and registers itself in
-// init()). createdAt is the same timestamp used for the log row, so the alarm
-// minute-bucket aligns with the recorded request time. Nil = no-op.
-var AfterRecordConsumeLogHook func(c *gin.Context, userId int, createdAt int64, params RecordConsumeLogParams)
+// AfterRecordConsumeLogHooks are invoked in registration order at the end of
+// RecordConsumeLog (after the consume log row and quota_data are written).
+// They are defined as package vars rather than direct calls so model does not
+// need to import service (the alarm implementation lives in the service
+// package and registers itself in init(); the gateway daily-tier usage
+// counter does the same). createdAt is the same timestamp used for the log
+// row, so the alarm minute-bucket aligns with the recorded request time.
+var AfterRecordConsumeLogHooks []func(c *gin.Context, userId int, createdAt int64, params RecordConsumeLogParams)
+
+// RegisterAfterRecordConsumeLogHook appends a hook invoked at the end of
+// RecordConsumeLog. It replaces the former single-var assignment so multiple
+// consumers (token alarm, daily-tier usage counter) can coexist.
+func RegisterAfterRecordConsumeLogHook(hook func(c *gin.Context, userId int, createdAt int64, params RecordConsumeLogParams)) {
+	if hook == nil {
+		return
+	}
+	AfterRecordConsumeLogHooks = append(AfterRecordConsumeLogHooks, hook)
+}
 
 func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams) {
 	if !common.LogConsumeEnabled {
@@ -449,8 +460,8 @@ func RecordConsumeLog(c *gin.Context, userId int, params RecordConsumeLogParams)
 			CacheTokens:      params.CacheTokens,
 		})
 	}
-	if AfterRecordConsumeLogHook != nil {
-		AfterRecordConsumeLogHook(c, userId, createdAt, params)
+	for _, hook := range AfterRecordConsumeLogHooks {
+		hook(c, userId, createdAt, params)
 	}
 }
 
