@@ -49,10 +49,20 @@ func BuildCandidates(profile *EffectiveProfile, requestModel string, opts *Gatew
 				continue
 			}
 			for _, m := range splitCSV(mg.Model) {
+				tierIdx := -1
+				if isTierName(requestModel) {
+					if idx, ok := tierCandidateModel(profile, requestModel, m); ok {
+						tierIdx = idx
+					} else {
+						continue
+					}
+				}
 				if !matchModel(m, mg, requestModel, profile) {
 					continue
 				}
-				out = append(out, newCandidate(pid, p, mg, m))
+				cand := newCandidate(pid, p, mg, m)
+				cand.TierIndex = tierIdx
+				out = append(out, cand)
 			}
 		}
 	}
@@ -74,8 +84,73 @@ func newCandidate(pid string, p *Provider, mg *ModelGroup, actualModel string) *
 	}
 }
 
+// allowedTierNames is the closed set of tier virtual-model names. Tiers live
+// under routing.tiers; a name outside this set is rejected by validateTiers.
+var allowedTierNames = map[string]bool{
+	"auto_low":  true,
+	"auto_mid":  true,
+	"auto_high": true,
+	"auto_max":  true,
+}
+
+// isTierName reports whether s is one of the four tier virtual-model names.
+// Exact-match only — the "auto-" prefix branch below must keep handling
+// capability names (auto-coding etc.) that are NOT tiers.
+func isTierName(s string) bool {
+	return allowedTierNames[s]
+}
+
+// tierModelIndex returns the position of model m inside tier's Models array
+// (0-based), resolving through modelAliases exactly like matchModel's exact
+// path: first a direct name match, then aliases whose expansion contains m.
+// -1 = m is not a member of the tier.
+func tierModelIndex(p *EffectiveProfile, tier *TierConfig, m string) int {
+	if tier == nil {
+		return -1
+	}
+	for i, name := range tier.Models {
+		if name == m {
+			return i
+		}
+	}
+	// Alias resolution: a tier entry may name an alias ("gpt-4") whose
+	// expansion lists concrete models. Use matchModel's exact/alias semantics
+	// against the alias entry so tier membership follows the same rules the
+	// default matchModel path enforces.
+	for i, name := range tier.Models {
+		if matchModel(m, nil, name, p) {
+			return i
+		}
+	}
+	return -1
+}
+
+// tierCandidateModel reports whether provider model m belongs to the tier
+// named by tierName, and returns its Models-array index.
+func tierCandidateModel(p *EffectiveProfile, tierName, m string) (int, bool) {
+	if p == nil || p.Routing == nil || p.Routing.Tiers == nil {
+		return -1, false
+	}
+	tier := p.Routing.Tiers[tierName]
+	if tier == nil || len(tier.Models) == 0 {
+		return -1, false
+	}
+	if idx := tierModelIndex(p, tier, m); idx >= 0 {
+		return idx, true
+	}
+	// matchModel's default branch already covers aliases against the profile;
+	// tierModelIndex above covers the alias-inside-tier case. Nothing else.
+	return -1, false
+}
+
 func matchModel(m string, mg *ModelGroup, req string, p *EffectiveProfile) bool {
 	switch {
+	case isTierName(req):
+		// Tier virtual model: only the tier's member models match. The
+		// tier index is stamped on the candidate by BuildCandidates so the
+		// sort layer can put the admin's model order first.
+		_, ok := tierCandidateModel(p, req, m)
+		return ok
 	case req == "" || req == "auto":
 		return true
 	case req == "auto-free":
@@ -110,7 +185,28 @@ func sortCandidates(cs []*Candidate, p *EffectiveProfile, opts *GatewayOptions) 
 	if opts != nil && opts.PreferFree {
 		costFirst = true
 	}
+	// A tier's own strategy can force cost-first ordering for its candidates
+	// (tier strategy outranks the group-level ModelSelection).
+	tierCostFirst := false
+	if p != nil && p.Routing != nil && len(p.Routing.Tiers) > 0 {
+		for _, tier := range p.Routing.Tiers {
+			if tier != nil && tier.Strategy == "cost" {
+				costFirst = true
+				tierCostFirst = true
+				break
+			}
+		}
+	}
 	sort.SliceStable(cs, func(i, j int) bool {
+		// Tier requests: the tier Models-array order (TierIndex) is the
+		// admin's model priority and outranks everything else — except a
+		// tier-level cost strategy, which puts free models first inside that
+		// tier. costFirst here also covers the group-level cost strategy and
+		// the prefer_free request option, both of which rank free models
+		// above the tier model order as well.
+		if cs[i].TierIndex >= 0 && cs[j].TierIndex >= 0 && cs[i].TierIndex != cs[j].TierIndex && !tierCostFirst {
+			return cs[i].TierIndex < cs[j].TierIndex
+		}
 		if costFirst && cs[i].IsFree != cs[j].IsFree {
 			return cs[i].IsFree
 		}
@@ -290,13 +386,22 @@ func VirtualModelNames() []string {
 			}
 			set[alias] = struct{}{}
 		}
+		// Configured tiers are callable virtual models exactly like aliases;
+		// only the four whitelisted names are exposed (validateTiers enforces
+		// the set, the guard here keeps /v1/models clean even if a bad config
+		// somehow reached memory).
+		for tierName := range prof.Routing.Tiers {
+			if allowedTierNames[tierName] {
+				set[tierName] = struct{}{}
+			}
+		}
 	}
 
 	// Drop the two hardcoded entries if no group declared any routing content —
 	// otherwise we'd advertise auto/auto-free even when the gateway has no
 	// aliases/capabilities configured at all.
 	if len(set) <= 2 {
-		// keep them only when at least one alias/capability was collected
+		// keep them only when at least one alias/capability/tier was collected
 		_, hasAliasOrCap := peekRouting(cfg)
 		if !hasAliasOrCap {
 			return nil
@@ -312,8 +417,9 @@ func VirtualModelNames() []string {
 }
 
 // peekRouting reports whether any enabled strategy group (merged with default)
-// declares modelAliases or modelCapabilities. Used by VirtualModelNames to
-// decide whether the hardcoded "auto"/"auto-free" entries should be advertised.
+// declares modelAliases, modelCapabilities or tiers. Used by VirtualModelNames
+// to decide whether the hardcoded "auto"/"auto-free" entries should be
+// advertised.
 func peekRouting(cfg *GatewayYaml) (string, bool) {
 	for name, group := range cfg.LLMGateway {
 		if group == nil {
@@ -326,7 +432,8 @@ func peekRouting(cfg *GatewayYaml) (string, bool) {
 		if prof == nil || prof.Routing == nil {
 			continue
 		}
-		if len(prof.Routing.ModelCapabilities) > 0 || len(prof.Routing.ModelAliases) > 0 {
+		if len(prof.Routing.ModelCapabilities) > 0 || len(prof.Routing.ModelAliases) > 0 ||
+			len(prof.Routing.Tiers) > 0 {
 			return name, true
 		}
 	}

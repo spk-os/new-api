@@ -132,3 +132,42 @@ func ForceProviderCooldownForChannel(c *gin.Context, channelId int) {
 		}
 	}
 }
+
+// IsTierRequest reports whether the request targeted a configured tier
+// virtual model (auto_low/auto_mid/auto_high/auto_max) — i.e. the plan was
+// built with TierRequest set. The relay retry loop uses this to enable
+// cross-model failover for tier requests only; every other request keeps
+// its pre-existing retry semantics.
+func IsTierRequest(plan *GatewayPlan) bool {
+	return plan != nil && plan.TierRequest != ""
+}
+
+// NextTierCandidate returns the plan's first tier candidate whose channel is
+// not the one that just failed and is not in provider cooldown. Candidates
+// whose channel cannot be resolved (disabled or missing synced channel) are
+// skipped. Daily-tier circuit-broken providers are already absent from a
+// freshly-built plan; a candidate that only now hit its tier limit is still
+// offered — the request already started under that tier and the daily-tier
+// break is a scheduling, not a runtime, concern. The returned candidate is
+// the failover target for the retry loop; the loop rewrites the body model
+// and re-locks the channel. ok=false means the tier is exhausted and the
+// caller must fall back to the pre-existing same-model retry path (or give
+// up).
+func NextTierCandidate(c *gin.Context, plan *GatewayPlan, failedChannelId int) (*Candidate, bool) {
+	if plan == nil || !IsTierRequest(plan) {
+		return nil, false
+	}
+	for _, cand := range plan.Candidates {
+		if cand == nil || cand.ChannelId <= 0 {
+			continue
+		}
+		if cand.ChannelId == failedChannelId {
+			continue
+		}
+		if IsProviderInCooldown(cand.ProviderId) {
+			continue
+		}
+		return cand, true
+	}
+	return nil, false
+}

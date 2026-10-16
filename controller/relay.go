@@ -306,6 +306,29 @@ func Relay(c *gin.Context, relayFormat types.RelayFormat) {
 		quotaExhausted := gateway.IsQuotaExhaustedError(newAPIError.StatusCode, newAPIError.Error())
 		skipSwitchDelay = quotaExhausted
 
+		// Tier requests fail over across the tier's other models before the
+		// loop re-runs channel selection: the plan's candidate chain is the
+		// admin-ordered model pool, so the next untried candidate (channel
+		// differs from the failed one, provider not cooling down) is the
+		// intended failover target. Non-tier requests skip this entirely —
+		// zero change to the existing retry path.
+		if gateway.IsTierRequest(gwPlan) {
+			if next, ok := gateway.NextTierCandidate(c, gwPlan, channel.Id); ok {
+				nextCh, chErr := model.CacheGetChannel(next.ChannelId)
+				if chErr == nil && nextCh != nil && nextCh.Status == common.ChannelStatusEnabled {
+					logger.LogInfo(c, fmt.Sprintf("retry %d/%d: tier failover: model %s -> %s (channel #%d %s)",
+						retryParam.GetRetry(), effectiveMaxRetries, relayInfo.OriginModelName, next.ActualModel, nextCh.Id, nextCh.Name))
+					gateway.RewriteRequestBodyModel(c, next.ActualModel)
+					common.SetContextKey(c, constant.ContextKeyGatewayLockedChannelId, nextCh.Id)
+					if setupErr := middleware.SetupContextForSelectedChannel(c, nextCh, next.ActualModel); setupErr == nil {
+						relayInfo.OriginModelName = next.ActualModel
+						common.SetContextKey(c, constant.ContextKeyGatewayActualModel, next.ActualModel)
+						continue
+					}
+				}
+			}
+		}
+
 		if !shouldRetry(c, newAPIError, effectiveMaxRetries-retryParam.GetRetry()) {
 			break
 		}

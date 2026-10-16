@@ -86,4 +86,10 @@ const (
 	ContextKeyGatewayClientId        ContextKey = "_gateway_client_id"
 	ContextKeyGatewayTaskId          ContextKey = "_gateway_task_id"
 	ContextKeyGatewayActualModel     ContextKey = "_gateway_actual_model"
+	// ContextKeyGatewayRequestedModel preserves the request's original model
+	// name (e.g. the tier virtual model "auto_high") before the gateway
+	// rewrites the body to a concrete model. SetupContextForSelectedChannel
+	// overwrites ContextKeyOriginalModel with the selected channel's model
+	// for retry purposes, so the virtual name needs its own slot.
+	ContextKeyGatewayRequestedModel ContextKey = "_gateway_requested_model"
 )

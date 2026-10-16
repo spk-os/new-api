@@ -189,6 +189,36 @@ type RoutingConfig struct {
 	ModelSelection    *ModelSelection        `yaml:"modelSelection"`
 	ModelAliases      map[string]interface{} `yaml:"modelAliases"` // string or []string
 	ModelCapabilities map[string][]string    `yaml:"modelCapabilities"`
+
+	// Tiers maps an effect-tier virtual model name (auto_low / auto_mid /
+	// auto_high / auto_max — enforced by validateTiers) to its ordered model
+	// pool. A tier request ("model": "auto_high") expands to one candidate
+	// per provider×model whose model is listed in the tier; the array order
+	// of Models is the priority order (front = preferred), outranking the
+	// provider order. Tier names are exposed in /v1/models (VirtualModelNames)
+	// and rewritten to a concrete model before relay.
+	Tiers map[string]*TierConfig `yaml:"tiers"`
+}
+
+// TierConfig - one effect tier (virtual model). Lives under
+// llm_gateway.<group>.routing.tiers.<tier-name>.
+type TierConfig struct {
+	// Models is the ordered model pool of the tier (front = preferred).
+	// Entries resolve across providers: a name matches a provider model-group
+	// model (exact or via modelAliases), so the same name may expand to
+	// several providers.
+	Models []string `yaml:"models"`
+
+	// Strategy selects the intra-tier ordering: priority (default) | cost
+	// (free models first) | session-balance (spread sessions across the
+	// first equal-priority block). session-balance needs no extra code —
+	// SessionBalanceCandidates already reorders the first equal-priority block.
+	Strategy string `yaml:"strategy"`
+
+	// FallbackTier names another tier to fall back to when every candidate
+	// of this tier is exhausted. Optional; reserved for a later phase (the
+	// failover layer currently stops at the tier boundary).
+	FallbackTier string `yaml:"fallbackTier"`
 }
 
 // ModelSelection - strategy for choosing models.
@@ -288,6 +318,12 @@ type Candidate struct {
 	ActualModel  string   // "minimax-m3-free"
 	IsFree       bool     // modelGroup.Tags contains "free"
 	DailyTier    int      // today's token-usage tier (0 = first tier or feature off)
+
+	// TierIndex is the position of the candidate's model inside the requested
+	// tier's Models array (-1 = the request is not a tier request). Tier
+	// requests sort by TierIndex FIRST (admin intent: the array order is the
+	// model priority), then by daily tier / provider order within one model.
+	TierIndex int
 }
 
 // GatewayPlan holds the execution plan for a request.
@@ -297,6 +333,12 @@ type GatewayPlan struct {
 	Candidates  []*Candidate
 	AffinityHit bool // true if affinity binding was found and prepended
 	Affinity    *AffinityConfig
+
+	// TierRequest is the tier virtual-model name ("auto_high") when the
+	// request targeted a configured tier, "" otherwise. The retry layer uses
+	// it to fail over across the tier's candidates (cross-model failover);
+	// non-tier plans keep the pre-existing retry semantics untouched.
+	TierRequest string
 }
 
 // AffinityBindingRecord is a stored affinity binding.

@@ -188,6 +188,26 @@ func mergeRouting(base, override *RoutingConfig) {
 			base.ModelCapabilities[k] = cp
 		}
 	}
+	// Tiers merge at the key level: a group overriding "auto_high" replaces
+	// default's auto_high entirely, tiers the group does not mention stay
+	// inherited from default. This matches the modelAliases map-merge
+	// semantics and keeps group-vs-default intent explicit per tier.
+	if len(override.Tiers) > 0 {
+		if base.Tiers == nil {
+			base.Tiers = make(map[string]*TierConfig, len(override.Tiers))
+		}
+		for k, v := range override.Tiers {
+			if v == nil {
+				delete(base.Tiers, k)
+				continue
+			}
+			cp := *v
+			if v.Models != nil {
+				cp.Models = append([]string(nil), v.Models...)
+			}
+			base.Tiers[k] = &cp
+		}
+	}
 }
 
 func cloneAffinity(a *AffinityConfig) *AffinityConfig {
@@ -233,6 +253,19 @@ func cloneRouting(r *RoutingConfig) *RoutingConfig {
 			cp := make([]string, len(v))
 			copy(cp, v)
 			out.ModelCapabilities[k] = cp
+		}
+	}
+	if r.Tiers != nil {
+		out.Tiers = make(map[string]*TierConfig, len(r.Tiers))
+		for k, v := range r.Tiers {
+			if v == nil {
+				continue
+			}
+			cp := *v
+			if v.Models != nil {
+				cp.Models = append([]string(nil), v.Models...)
+			}
+			out.Tiers[k] = &cp
 		}
 	}
 	return out

@@ -29,6 +29,7 @@ var (
 	allowedOverLimitStrategy = map[string]bool{"queue": true, "downgrade": true, "reject": true}
 	allowedFailoverPriority  = map[string]bool{"sameModel": true, "sameProvider": true}
 	allowedRoutingStrategy   = map[string]bool{"priority": true, "cost": true}
+	allowedTierStrategy      = map[string]bool{"priority": true, "session-balance": true, "cost": true}
 )
 
 var (
@@ -228,7 +229,7 @@ func validate(cfg *GatewayYaml) error {
 		if group == nil {
 			return fmt.Errorf("gateway config: llm_gateway.%s is null", name)
 		}
-		if err := validateGroup(name, group); err != nil {
+		if err := validateGroup(name, group, cfg); err != nil {
 			return err
 		}
 	}
@@ -294,7 +295,7 @@ func validate(cfg *GatewayYaml) error {
 	return nil
 }
 
-func validateGroup(name string, g *StrategyGroup) error {
+func validateGroup(name string, g *StrategyGroup, cfg *GatewayYaml) error {
 	if g.LLMCommon != nil && g.LLMCommon.RateLimiting != nil {
 		if err := validateRateLimiting(fmt.Sprintf("llm_gateway.%s.llmCommon.rateLimiting", name), g.LLMCommon.RateLimiting); err != nil {
 			return err
@@ -321,6 +322,124 @@ func validateGroup(name string, g *StrategyGroup) error {
 	if g.Routing != nil && g.Routing.ModelSelection != nil && strings.TrimSpace(g.Routing.ModelSelection.Strategy) != "" {
 		if !allowedRoutingStrategy[g.Routing.ModelSelection.Strategy] {
 			return fmt.Errorf("gateway config: llm_gateway.%s.routing.modelSelection.strategy must be one of [priority, cost], got %q", name, g.Routing.ModelSelection.Strategy)
+		}
+	}
+	if g.Routing != nil && len(g.Routing.Tiers) > 0 {
+		if err := validateTiers(name, g.Routing.Tiers); err != nil {
+			return err
+		}
+		if err := validateTierCrossField(name, g, cfg); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateTiers enforces the tiers contract for one strategy group:
+//   - tier names are limited to the four whitelisted virtual-model names
+//     (auto_low/auto_mid/auto_high/auto_max) — typos like auto_medium must
+//     fail the save, not silently create an unroutable model;
+//   - each tier has a non-empty, non-blank Models list;
+//   - strategy, when set, is one of the three intra-tier ordering modes;
+//   - fallbackTier, when set, must reference another defined tier and must
+//     not form a self-reference or a cycle (bounded walk: at most as many
+//     hops as there are tiers).
+//
+// Duplicate model entries inside a tier are allowed (the same name may map
+// to several providers), so no dedup error here.
+func validateTiers(group string, tiers map[string]*TierConfig) error {
+	for tierName, tier := range tiers {
+		if !allowedTierNames[tierName] {
+			return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s: tier name must be one of [auto_low, auto_mid, auto_high, auto_max]", group, tierName)
+		}
+		if tier == nil {
+			return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s is null", group, tierName)
+		}
+		if len(tier.Models) == 0 {
+			return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s.models must be a non-empty list", group, tierName)
+		}
+		for i, m := range tier.Models {
+			if strings.TrimSpace(m) == "" {
+				return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s.models[%d] must not be blank", group, tierName, i)
+			}
+		}
+		if strings.TrimSpace(tier.Strategy) != "" && !allowedTierStrategy[tier.Strategy] {
+			return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s.strategy must be one of [priority, session-balance, cost], got %q", group, tierName, tier.Strategy)
+		}
+		if ft := strings.TrimSpace(tier.FallbackTier); ft != "" {
+			if ft == tierName {
+				return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s.fallbackTier must not reference itself", group, tierName)
+			}
+			target, ok := tiers[ft]
+			if !ok || target == nil {
+				return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers.%s.fallbackTier references undefined tier %q", group, tierName, ft)
+			}
+		}
+	}
+	// Cycle detection along fallbackTier chains: walk each chain at most
+	// len(tiers) hops; exceeding means a cycle (a self-reference was already
+	// rejected above, so any cycle here involves >= 2 tiers).
+	for tierName := range tiers {
+		seen := map[string]bool{tierName: true}
+		cur := tiers[tierName]
+		for hops := 0; cur != nil && hops < len(tiers); hops++ {
+			next := strings.TrimSpace(cur.FallbackTier)
+			if next == "" {
+				break
+			}
+			if seen[next] {
+				return fmt.Errorf("gateway config: llm_gateway.%s.routing.tiers fallbackTier chain from %s forms a cycle at %s", group, tierName, next)
+			}
+			seen[next] = true
+			cur = tiers[next]
+		}
+	}
+	return nil
+}
+
+// validateTierCrossField guards the boundaries between tiers and the other
+// model-name namespaces of the same group:
+//   - a tier name must not collide with a modelAliases key or a
+//     modelCapabilities key — matchModel resolves tiers first, so a collision
+//     would silently shadow the alias/capability;
+//   - a model_name_mapping pattern must not rewrite a tier name away (the
+//     mapping middleware runs before the gateway; rewriting "auto_high" to a
+//     concrete model would silently defeat the tier semantics).
+//
+// Pattern semantics mirror ModelNameMappingMiddleware: a trailing `*` means
+// prefix match, anything else is an exact match. The mapping rules come from
+// cfg (the YAML being validated), NOT GetConfig(): ParseAndValidate runs
+// before the in-memory swap, so the global config still holds the previous
+// YAML at this point.
+func validateTierCrossField(group string, g *StrategyGroup, cfg *GatewayYaml) error {
+	if g.Routing == nil {
+		return nil
+	}
+	for tierName := range g.Routing.Tiers {
+		if _, ok := g.Routing.ModelAliases[tierName]; ok {
+			return fmt.Errorf("gateway config: llm_gateway.%s: tier name %q collides with a modelAliases key of the same name", group, tierName)
+		}
+		if _, ok := g.Routing.ModelCapabilities[tierName]; ok {
+			return fmt.Errorf("gateway config: llm_gateway.%s: tier name %q collides with a modelCapabilities key of the same name", group, tierName)
+		}
+	}
+	if cfg == nil || len(cfg.ModelNameMapping) == 0 {
+		return nil
+	}
+	for _, rule := range cfg.ModelNameMapping {
+		pat, _ := splitMappingRule(rule)
+		if pat == "" {
+			continue
+		}
+		hit := false
+		for tierName := range g.Routing.Tiers {
+			if matchPattern(pat, tierName) {
+				hit = true
+				break
+			}
+		}
+		if hit {
+			return fmt.Errorf("gateway config: llm_gateway.%s: model_name_mapping rule %q would rewrite tier name(s) away; remove or narrow the rule", group, rule)
 		}
 	}
 	return nil

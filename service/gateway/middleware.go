@@ -50,6 +50,9 @@ func GatewayStrategyMiddleware() gin.HandlerFunc {
 		}
 
 		requestedModel := requestedModelFrom(c)
+		if requestedModel != "" {
+			common.SetContextKey(c, constant.ContextKeyGatewayRequestedModel, requestedModel)
+		}
 
 		var plan *GatewayPlan
 		var stickyHit bool
@@ -70,6 +73,11 @@ func GatewayStrategyMiddleware() gin.HandlerFunc {
 							AffinityHit: true,
 							Affinity:    prof.Affinity,
 						}
+						// Tier requests keep the full tier candidate chain
+						// behind the sticky candidate so the retry layer can
+						// fail over across the tier's other models when the
+						// bound provider fails (cross-model failover).
+						appendTierFallbackCandidates(plan, prof, requestedModel)
 						stickyHit = true
 						if prof.Affinity.Binding != nil && prof.Affinity.Binding.ExtendOnAccess {
 							ttl := time.Duration(prof.Affinity.Binding.TTL) * time.Second
@@ -97,6 +105,9 @@ func GatewayStrategyMiddleware() gin.HandlerFunc {
 				SessionBalanceCandidates(cands, sid)
 			}
 			plan = &GatewayPlan{Profile: prof, Retry: prof.ProviderRetry, Candidates: cands, Affinity: prof.Affinity}
+			if isTierName(requestedModel) && tierConfigured(prof, requestedModel) {
+				plan.TierRequest = requestedModel
+			}
 		}
 
 		var picked *Candidate
@@ -290,6 +301,66 @@ func stickyEnabled(opts *GatewayOptions, c *gin.Context) bool {
 		return v == "1" || v == "true" || v == "yes"
 	}
 	return true
+}
+
+// RewriteRequestBodyModel rewrites the request body's top-level "model" field
+// to actualModel so the downstream chain (distributor, relay, upstream) uses
+// the concrete model. Exported for the tier failover path in the relay retry
+// loop, which must switch the body model when moving to the tier's next
+// candidate. No-op when the body is missing, invalid JSON, or has no model
+// field.
+func RewriteRequestBodyModel(c *gin.Context, actualModel string) {
+	rewriteRequestBodyModel(c, actualModel)
+}
+
+// tierConfigured reports whether the group's effective routing actually
+// declares tierName. A request naming a tier that is not configured (e.g.
+// "auto_max" with only auto_low defined) is not a tier request — it falls
+// through to the alias/exact match semantics.
+func tierConfigured(prof *EffectiveProfile, tierName string) bool {
+	if prof == nil || prof.Routing == nil || prof.Routing.Tiers == nil {
+		return false
+	}
+	t := prof.Routing.Tiers[tierName]
+	return t != nil && len(t.Models) > 0
+}
+
+// appendTierFallbackCandidates extends an affinity-hit tier plan with the
+// tier's full candidate chain: sticky candidate first, then every tier
+// candidate not already covered by the sticky one (dedup by
+// provider+model+channel). The retry layer walks this chain on failure, so a
+// sticky hit on a tier request still has cross-model failover available.
+func appendTierFallbackCandidates(plan *GatewayPlan, prof *EffectiveProfile, requestedModel string) {
+	if plan == nil || !isTierName(requestedModel) || !tierConfigured(prof, requestedModel) {
+		return
+	}
+	if plan.TierRequest == "" {
+		plan.TierRequest = requestedModel
+	}
+	if len(plan.Candidates) == 0 {
+		return
+	}
+	sticky := plan.Candidates[0]
+	extra := BuildCandidates(prof, requestedModel, nil)
+	seen := make(map[string]bool, len(extra)+1)
+	seen[stickyKey(sticky)] = true
+	for _, cand := range extra {
+		if cand == nil {
+			continue
+		}
+		k := stickyKey(cand)
+		if seen[k] {
+			continue
+		}
+		seen[k] = true
+		plan.Candidates = append(plan.Candidates, cand)
+	}
+}
+
+// stickyKey identifies a candidate for affinity-hit dedup: the same provider
+// serving the same concrete model is the same failover unit.
+func stickyKey(c *Candidate) string {
+	return c.ProviderId + "\x00" + c.ActualModel
 }
 
 func candidateFromBinding(cfg *GatewayYaml, rec *AffinityBindingRecord, prof *EffectiveProfile) *Candidate {
