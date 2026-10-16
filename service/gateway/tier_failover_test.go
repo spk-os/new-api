@@ -66,6 +66,32 @@ func TestNextTierCandidate_OrderAndSkips(t *testing.T) {
 	assert.False(t, ok3, "tier with every other candidate unusable must report exhaustion")
 }
 
+// TestNextTierCandidate_NeverReturnsTriedChannel protects the anti-ping-pong
+// contract: once a channel has been attempted in this request (recorded in
+// the context's use_channel list) it must never be offered again, so a
+// A-fails -> B chain cannot bounce back to A when B fails too.
+func TestNextTierCandidate_NeverReturnsTriedChannel(t *testing.T) {
+	w := httptest.NewRecorder()
+	c, _ := gin.CreateTestContext(w)
+	plan := tierPlan(
+		tierCand("ali", 1, "glmA"),
+		tierCand("zen", 2, "kimiB"),
+	)
+	// Channel 1 (ali) already attempted and failed earlier in this request.
+	c.Set("use_channel", []string{"1"})
+
+	got, ok := NextTierCandidate(c, plan, 1)
+	require.True(t, ok)
+	assert.Equal(t, "zen", got.ProviderId)
+	assert.Equal(t, 2, got.ChannelId, "the untried channel is the failover target")
+
+	// Channel 2 (zen) fails now too: with both channels attempted the tier is
+	// exhausted — ali must not come back for a second round.
+	c.Set("use_channel", []string{"1", "2"})
+	_, ok = NextTierCandidate(c, plan, 2)
+	assert.False(t, ok, "a channel already tried for this request must never be re-offered")
+}
+
 // TestNextTierCandidate_NonTierPlanIsNoop protects the non-tier regression
 // surface: a plan without TierRequest never yields a failover candidate,
 // even when it carries candidates.

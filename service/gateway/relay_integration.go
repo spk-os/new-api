@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/QuantumNous/new-api/common"
@@ -143,9 +144,11 @@ func IsTierRequest(plan *GatewayPlan) bool {
 }
 
 // NextTierCandidate returns the plan's first tier candidate whose channel is
-// not the one that just failed and is not in provider cooldown. Candidates
-// whose channel cannot be resolved (disabled or missing synced channel) are
-// skipped. Daily-tier circuit-broken providers are already absent from a
+// usable for failover: not the one that just failed, not one already tried
+// earlier in this request (tracked as channel IDs in the context's
+// use_channel list), and not in provider cooldown. Candidates whose channel
+// cannot be resolved (disabled or missing synced channel) are skipped.
+// Daily-tier circuit-broken providers are already absent from a
 // freshly-built plan; a candidate that only now hit its tier limit is still
 // offered — the request already started under that tier and the daily-tier
 // break is a scheduling, not a runtime, concern. The returned candidate is
@@ -157,11 +160,12 @@ func NextTierCandidate(c *gin.Context, plan *GatewayPlan, failedChannelId int) (
 	if plan == nil || !IsTierRequest(plan) {
 		return nil, false
 	}
+	tried := triedTierChannelIds(c, failedChannelId)
 	for _, cand := range plan.Candidates {
 		if cand == nil || cand.ChannelId <= 0 {
 			continue
 		}
-		if cand.ChannelId == failedChannelId {
+		if tried[cand.ChannelId] {
 			continue
 		}
 		if IsProviderInCooldown(cand.ProviderId) {
@@ -170,4 +174,26 @@ func NextTierCandidate(c *gin.Context, plan *GatewayPlan, failedChannelId int) (
 		return cand, true
 	}
 	return nil, false
+}
+
+// triedTierChannelIds builds the set of channels this request must not be
+// routed to again: the channel that just failed plus every channel already
+// attempted in the retry loop (the context's use_channel list). This keeps a
+// tier failover chain from ping-ponging back to a channel that already
+// failed for this request (A fails -> B -> B fails -> A again).
+func triedTierChannelIds(c *gin.Context, failedChannelId int) map[int]bool {
+	tried := make(map[int]bool, 4)
+	if failedChannelId > 0 {
+		tried[failedChannelId] = true
+	}
+	if c != nil {
+		for _, s := range c.GetStringSlice("use_channel") {
+			id, err := strconv.Atoi(s)
+			if err != nil {
+				continue
+			}
+			tried[id] = true
+		}
+	}
+	return tried
 }
