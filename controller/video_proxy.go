@@ -112,8 +112,18 @@ func VideoProxy(c *gin.Context) {
 			return
 		}
 	case constant.ChannelTypeOpenAI, constant.ChannelTypeSora:
-		videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
-		req.Header.Set("Authorization", "Bearer "+channel.Key)
+		if task.Platform == constant.TaskPlatformAgnes {
+			// Agnes 轮询响应已带视频直链，直接代理；无直链时回退 OpenAI content 端点
+			videoURL = task.GetResultURL()
+			// 防自代理回环：ResultURL 可能是指向本代理的回环地址
+			if strings.HasSuffix(videoURL, fmt.Sprintf("/v1/videos/%s/content", task.TaskID)) {
+				videoURL = ""
+			}
+		}
+		if videoURL == "" {
+			videoURL = fmt.Sprintf("%s/v1/videos/%s/content", baseURL, task.GetUpstreamTaskID())
+			req.Header.Set("Authorization", "Bearer "+channel.Key)
+		}
 	default:
 		// Video URL is stored in PrivateData.ResultURL (fallback to FailReason for old data)
 		videoURL = task.GetResultURL()

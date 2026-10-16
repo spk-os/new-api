@@ -2,6 +2,7 @@ package relay
 
 import (
 	"strconv"
+	"strings"
 
 	"github.com/QuantumNous/new-api/constant"
 	"github.com/QuantumNous/new-api/relay/channel"
@@ -35,6 +36,7 @@ import (
 	"github.com/QuantumNous/new-api/relay/channel/siliconflow"
 	"github.com/QuantumNous/new-api/relay/channel/submodel"
 	taskali "github.com/QuantumNous/new-api/relay/channel/task/ali"
+	taskagnes "github.com/QuantumNous/new-api/relay/channel/task/agnes"
 	taskdoubao "github.com/QuantumNous/new-api/relay/channel/task/doubao"
 	taskGemini "github.com/QuantumNous/new-api/relay/channel/task/gemini"
 	"github.com/QuantumNous/new-api/relay/channel/task/hailuo"
@@ -137,6 +139,11 @@ func GetAdaptor(apiType int) channel.Adaptor {
 }
 
 func GetTaskPlatform(c *gin.Context) constant.TaskPlatform {
+	// Agnes 视频：渠道类型为 OpenAI 兼容，但提交后必须用 video_id 走
+	// /agnesapi 轮询，按模型名前缀分流出独立平台，避免落入 sora 轮询。
+	if strings.HasPrefix(c.GetString("original_model"), "agnes-video-") {
+		return constant.TaskPlatformAgnes
+	}
 	channelType := c.GetInt("channel_type")
 	if channelType > 0 {
 		return constant.TaskPlatform(strconv.Itoa(channelType))
@@ -150,6 +157,8 @@ func GetTaskAdaptor(platform constant.TaskPlatform) channel.TaskAdaptor {
 	//	return &aiproxy.Adaptor{}
 	case constant.TaskPlatformSuno:
 		return &suno.TaskAdaptor{}
+	case constant.TaskPlatformAgnes:
+		return &taskagnes.TaskAdaptor{}
 	}
 	if channelType, err := strconv.ParseInt(string(platform), 10, 64); err == nil {
 		switch channelType {
