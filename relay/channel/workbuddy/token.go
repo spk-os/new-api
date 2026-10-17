@@ -24,8 +24,8 @@ import (
 //   - key 也支持直接粘贴 accessToken（便于短期验证），跳过刷新流程，此时
 //     X-User-Id 等身份头缺失，部分接口可能被上游风控拒绝
 const (
-	// 响应无 expiresAt 时的兜底 TTL。WorkBuddy accessToken 实际有效期未公开，
-	// 保守取 30 分钟（同 deveco 口径），刷新成本低。
+	// 响应无任何过期信息时的兜底 TTL。实测刷新响应携带 expiresIn=2419200
+	//（accessToken 有效期 28 天），此兜底仅在异常响应下生效。
 	workbuddyAccessTokenTTL  = 30 * time.Minute
 	workbuddyRefreshLead     = 2 * time.Minute
 	workbuddyRefreshCooldown = 30 * time.Second
@@ -63,11 +63,13 @@ func parseCredential(key string) *Credential {
 
 // refreshEnvelope 兼容刷新响应的多种包裹形态（实测接口文档未公开响应结构，
 // 按 workbuddy-desktop.info 同源结构 {auth:{...}} 与常见 {data:{...}}、
-// 扁平三种形态解析）。
+// 扁平三种形态解析）。ExpiresAt 为绝对时间戳（秒或毫秒），ExpiresIn 为
+// 相对秒数（实测线上响应 {data:{expiresIn:2419200}} 形态）。
 type refreshEnvelope struct {
 	AccessToken  string           `json:"accessToken"`
 	RefreshToken string           `json:"refreshToken"`
 	ExpiresAt    int64            `json:"expiresAt"`
+	ExpiresIn    int64            `json:"expiresIn"`
 	Auth         *refreshEnvelope `json:"auth"`
 	Data         *refreshEnvelope `json:"data"`
 }
@@ -220,5 +222,10 @@ func workbuddyRefreshToken(ctx context.Context, refreshToken, refreshURL string)
 	} else {
 		refresh = refreshToken
 	}
-	return result.AccessToken, refresh, expiresAtFromUnix(result.ExpiresAt), nil
+	// 优先绝对时间戳，其次相对秒数（实测线上响应 expiresIn=2419200 即 28 天）
+	expiresAt = expiresAtFromUnix(result.ExpiresAt)
+	if expiresAt.IsZero() && result.ExpiresIn > 0 {
+		expiresAt = time.Now().Add(time.Duration(result.ExpiresIn) * time.Second)
+	}
+	return result.AccessToken, refresh, expiresAt, nil
 }

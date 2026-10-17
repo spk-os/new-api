@@ -105,6 +105,25 @@ func TestRefreshTokenRotatedResponse(t *testing.T) {
 	assert.True(t, expiresAt.IsZero(), "响应无 expiresAt 时应返回零值走兜底 TTL")
 }
 
+func TestRefreshTokenLiveResponseShape(t *testing.T) {
+	// 线上真实响应形态（2026-10-18 实测）：
+	// {"code":0,"msg":"OK","data":{"accessToken":"...","expiresIn":2419200,"refreshToken":"..."}}
+	// 关键断言：expiresIn(相对秒) 必须被消费——修复前只解析 expiresAt(绝对时间戳)，
+	// 导致 28 天有效期的 access token 每 30 分钟兜底 TTL 刷一次（48 次/天）
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"code":0,"msg":"OK","requestId":"x","data":{"accessToken":"at-live","expiresIn":2419200,"refreshToken":"rt-live"}}`))
+	}))
+	defer srv.Close()
+
+	access, refresh, expiresAt, err := workbuddyRefreshToken(context.Background(), "rt-old", srv.URL)
+	require.NoError(t, err)
+	assert.Equal(t, "at-live", access)
+	assert.Equal(t, "rt-live", refresh)
+	require.False(t, expiresAt.IsZero(), "expiresIn=2419200 必须换算为绝对过期时间，不得落入 30 分钟兜底")
+	assert.True(t, time.Until(expiresAt) > 27*24*time.Hour, "换算出的有效期应约 28 天")
+}
+
 func TestResolveCredentialRawTokenPassthrough(t *testing.T) {
 	cred, err := ResolveCredential(context.Background(), "raw-access-token", "https://www.workbuddy.cn")
 	require.NoError(t, err)
