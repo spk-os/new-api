@@ -99,8 +99,12 @@ func main() {
 	// endpoint inference can read cached route settings on first request.
 	model.GetPricing()
 
-	// WorkBuddy 渠道启动时拉取 /v3/config 模型花名册，保持模型名与上游一致
-	go controller.SyncWorkBuddyChannelModelsAtStartup()
+	// WorkBuddy 渠道启动时拉取 /v3/config 模型花名册，保持模型名与上游一致。
+	// 默认关闭：上游花名册含过时模型，全量覆盖会复活手工清理；需要时设
+	// WORKBUDDY_STARTUP_MODEL_SYNC=true 开启。
+	if common.GetEnvOrDefaultBool("WORKBUDDY_STARTUP_MODEL_SYNC", false) {
+		go controller.SyncWorkBuddyChannelModelsAtStartup()
+	}
 
 	// 热更新配置
 	go model.SyncOptions(common.SyncFrequency)
