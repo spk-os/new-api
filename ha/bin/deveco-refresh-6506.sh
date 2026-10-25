@@ -21,9 +21,9 @@ set -euo pipefail
 ADMIN="Authorization: Bearer 99da79052d7de01cc6ef74b968568bdf"
 API="http://localhost:3500/api/channel/"
 CFG_API="http://localhost:3500/api/admin/gateway/config"
-WIN_SCRIPT="C:/Users/Administrator/AppData/Local/Temp/deveco-get-access.js"
+WIN_SCRIPT="E:/tools/deveco-get-access.js"
 WIN_CONFIG_DIR="C:/Users/Administrator/.deveco-6506"
-PROVIDER_NAME="DevEco Code_6506"
+PROVIDER_NAME="DECode_6506"
 CHANNEL_ID=25
 # 2026-10-12 用户确认：6506 = 大**** = userId 450086000000005386（见脚本头部说明）
 EXPECTED_USER_ID="450086000000005386"

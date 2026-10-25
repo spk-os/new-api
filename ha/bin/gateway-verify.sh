@@ -1,5 +1,5 @@
 #!/bin/bash
-# /work/SPK-OS/soft/basic/new-api/ha/bin/gateway-verify.sh
+# /work/spk-os/soft/basic/new-api/ha/bin/gateway-verify.sh
 # LLM Gateway 高可用部署验证脚本
 # 用法: ./gateway-verify.sh
 
@@ -8,8 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HA_DIR="$(dirname "$SCRIPT_DIR")"
 NGINX_CONF="$HA_DIR/nginx/upstream.conf"
-PG_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-pg-prod-password"
-REDIS_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-redis-prod-password"
+PG_PASSWORD_FILE="/work/spk-os/env/secrets/infra-pg-prod-password"
+REDIS_PASSWORD_FILE="/work/spk-os/env/secrets/infra-redis-prod-password"
 
 for secret_file in "$PG_PASSWORD_FILE" "$REDIS_PASSWORD_FILE"; do
     if [[ ! -r "$secret_file" ]]; then
@@ -117,6 +117,21 @@ echo -n "10. Redis 亲和绑定: "
 AFF_COUNT=$(docker exec spk-redis-prod redis-cli -a "$REDIS_PASSWORD" --no-auth-warning \
     keys "gateway:affinity:*" 2>/dev/null | wc -l)
 echo "$AFF_COUNT 条"
+
+# 11. 浮动 tag 与运行容器一致性（重启/recreate 按浮动 tag 起容器，
+#     指向漂移 = 下次重启静默回退——10-17 事故根因）
+echo -n "11. 浮动 tag new-api:gateway 一致性: "
+FLOATING_TAG_NAME="new-api:gateway"
+FLOATING_ID=$(docker images -q "$FLOATING_TAG_NAME" 2>/dev/null | head -1)
+BLUE_IMG=$(docker inspect -f '{{.Image}}' new-api-blue 2>/dev/null | cut -c8-19)
+GREEN_IMG=$(docker inspect -f '{{.Image}}' new-api-green 2>/dev/null | cut -c8-19)
+if [[ -z "$FLOATING_ID" ]]; then
+    echo "✗ (浮动 tag 不存在)"
+elif [[ "$FLOATING_ID" != "$BLUE_IMG" || "$FLOATING_ID" != "$GREEN_IMG" ]]; then
+    echo "✗ (floating=$FLOATING_ID blue=$BLUE_IMG green=$GREEN_IMG — recreate 将回退!)"
+else
+    echo "✓ (双容器与浮动 tag 同镜像 $FLOATING_ID)"
+fi
 
 echo ""
 echo "═══════════════════════════════════════"

@@ -43,7 +43,7 @@ services:
       - "3501:3000"
     volumes:
       - shared_data:/data
-      - ./logs/blue:/app/logs
+      - /root/share/logs/llm/new-api/blue:/app/logs
       - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
       - SQL_DSN=postgresql://${PG_USER:-spk}:${PG_PASSWORD:?PG_PASSWORD must be loaded by gateway-lifecycle.sh}@${PG_HOST:-spk-pg-prod}:${PG_PORT:-5432}/${PG_DB:-new-api}
@@ -77,7 +77,7 @@ services:
       - "3502:3000"
     volumes:
       - shared_data:/data
-      - ./logs/green:/app/logs
+      - /root/share/logs/llm/new-api/green:/app/logs
       - /root/share/ops/logs/new-api:/root/share/ops/logs/new-api
     environment:
       - SQL_DSN=postgresql://${PG_USER:-spk}:${PG_PASSWORD:?PG_PASSWORD must be loaded by gateway-lifecycle.sh}@${PG_HOST:-spk-pg-prod}:${PG_PORT:-5432}/${PG_DB:-new-api}

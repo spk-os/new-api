@@ -18,9 +18,9 @@ set -euo pipefail
 ADMIN="Authorization: Bearer 99da79052d7de01cc6ef74b968568bdf"
 API="http://localhost:3500/api/channel/"
 CFG_API="http://localhost:3500/api/admin/gateway/config"
-WIN_SCRIPT="C:/Users/Administrator/AppData/Local/Temp/deveco-get-access.js"
+WIN_SCRIPT="E:/tools/deveco-get-access.js"
 WIN_CONFIG_DIR="C:/Users/Administrator/.deveco-9226"
-PROVIDER_NAME="DevEco Code_9226"
+PROVIDER_NAME="DECode_9226"
 CHANNEL_ID=26
 EXPECTED_USER_ID=20086000973714746
 

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BASE_DIR="/work/SPK-OS/soft/basic/new-api/ha"
-PG_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-pg-prod-password"
-REDIS_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-redis-prod-password"
+BASE_DIR="/work/spk-os/soft/basic/new-api/ha"
+PG_PASSWORD_FILE="/work/spk-os/env/secrets/infra-pg-prod-password"
+REDIS_PASSWORD_FILE="/work/spk-os/env/secrets/infra-redis-prod-password"
 COMPOSE_FILE="$BASE_DIR/docker-compose.ha.yml"
 
 action="${1:-}"

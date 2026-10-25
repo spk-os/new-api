@@ -1,5 +1,5 @@
 #!/bin/bash
-# /work/SPK-OS/soft/basic/new-api/ha/bin/gateway-upgrade.sh
+# /work/spk-os/soft/basic/new-api/ha/bin/gateway-upgrade.sh
 # LLM Gateway 蓝绿升级脚本
 # 用法: ./gateway-upgrade.sh <new-image-tag>
 # 示例: ./gateway-upgrade.sh new-api:gateway-v2.1.0
@@ -45,8 +45,8 @@ docker rm "new-api-$STANDBY" 2>/dev/null || true
 # 使用新镜像启动 standby
 # docker-compose.ha.yml 的 SQL_DSN/REDIS_CONN_STRING 要求 PG_PASSWORD/REDIS_PASSWORD
 # 从 secrets 导出（同 gateway-lifecycle.sh），否则 compose 插值直接失败。
-PG_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-pg-prod-password"
-REDIS_PASSWORD_FILE="/work/SPK-OS/env/secrets/infra-redis-prod-password"
+PG_PASSWORD_FILE="/work/spk-os/env/secrets/infra-pg-prod-password"
+REDIS_PASSWORD_FILE="/work/spk-os/env/secrets/infra-redis-prod-password"
 export PG_PASSWORD="$(tr -d '\r\n' < "$PG_PASSWORD_FILE")"
 export REDIS_PASSWORD="$(tr -d '\r\n' < "$REDIS_PASSWORD_FILE")"
 GATEWAY_IMAGE="$NEW_IMAGE" docker compose -f docker-compose.ha.yml up -d "$STANDBY"

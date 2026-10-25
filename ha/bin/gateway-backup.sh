@@ -1,8 +1,11 @@
 #!/bin/bash
-# /work/SPK-OS/soft/basic/new-api/ha/bin/gateway-backup.sh
+# /work/spk-os/soft/basic/new-api/ha/bin/gateway-backup.sh
 # LLM Gateway PG 备份脚本
-# 用法: ./gateway-backup.sh
-# 功能: 预校验 → PG dump → 后校验 → 保留策略（最多3份，至少1份>=1天前）
+# 用法: ./gateway-backup.sh [full|quick]
+#   full  （默认）全库 dump，含 logs 表
+#   quick 排除 logs 表（占 95% 体积），渠道/配置变更前快照用；
+#         logs 全量由每日 10:00 spk-backup.sh both 覆盖（backups/prod/postgresql）
+# 功能: 预校验 → PG dump（gzip 压缩）→ 后校验 → 保留策略（最多3份，至少1份>=1天前）
 
 set -euo pipefail
 
@@ -12,8 +15,15 @@ BAK_DIR="$HA_DIR/bak"
 PG_CONTAINER="spk-pg-prod"
 PG_USER="spk"
 PG_DB="new-api"
+MODE="${1:-full}"
 MAX_BACKUPS=3
 MIN_AGE_HOURS=24
+
+case "$MODE" in
+    full)  DUMP_ARGS=() ;;
+    quick) DUMP_ARGS=(--exclude-table=logs) ;;
+    *) echo "用法: $0 [full|quick]" >&2; exit 2 ;;
+esac
 
 log() { echo "[$(date '+%Y-%m-%d %H:%M:%S')] $*"; }
 die() { log "ERROR: $*"; exit 1; }
@@ -43,13 +53,14 @@ AVAIL_KB=$(df -P "$BAK_DIR" | awk 'NR==2 {print $4}')
 log "  磁盘空间充足（$((AVAIL_KB/1024))MB 可用）✓"
 
 # ============================================================
-# Phase 2: PG dump
+# Phase 2: PG dump（gzip -9 压缩；裸 SQL 已验证 2.0G → 317M）
 # ============================================================
-log "Phase 2: 执行 PG dump..."
+log "Phase 2: 执行 PG dump（mode=$MODE）..."
 TIMESTAMP=$(date +%Y%m%d%H%M%S)
-DUMP_FILE="$BAK_DIR/pg_dump_${TIMESTAMP}.sql"
+[[ "$MODE" == quick ]] && TAG="_quick" || TAG=""
+DUMP_FILE="$BAK_DIR/pg_dump${TAG}_${TIMESTAMP}.sql.gz"
 
-docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" "$PG_DB" > "$DUMP_FILE" \
+docker exec "$PG_CONTAINER" pg_dump -U "$PG_USER" "${DUMP_ARGS[@]}" "$PG_DB" | gzip -9 > "$DUMP_FILE" \
     || die "pg_dump 失败"
 
 log "  dump 完成: $DUMP_FILE ($(du -h "$DUMP_FILE" | cut -f1))"
@@ -63,10 +74,14 @@ log "Phase 3: 后校验..."
 FILE_SIZE=$(stat -c%s "$DUMP_FILE")
 [[ "$FILE_SIZE" -gt 1000 ]] || die "dump 文件过小（$FILE_SIZE bytes），可能为空或损坏"
 
-# 3.2 SQL 头部校验
-head -5 "$DUMP_FILE" | grep -qi "postgresql database dump\|SET\|CREATE\|COPY\|INSERT" \
+# 3.2 gzip 完整性 + SQL 头部校验（压缩流是整体，坏了恢复时才炸，必须当场验）
+# 注意脚本开了 pipefail：grep -m1 提前退出会让 zcat 收 SIGPIPE 返回 141，
+# 因此校验结果先落变量再判，不能依赖管道整体退出码。
+gzip -t "$DUMP_FILE" || die "gzip 完整性校验失败，文件可能损坏"
+DUMP_HEAD=$(zcat "$DUMP_FILE" | head -30 || true)
+[[ "$DUMP_HEAD" == *"PostgreSQL database dump"* ]] \
     || die "dump 文件头部不是有效的 SQL dump"
-log "  dump 文件有效（$FILE_SIZE bytes）✓"
+log "  dump 有效（$FILE_SIZE bytes，gzip 校验通过）✓"
 
 # ============================================================
 # Phase 4: 保留策略
@@ -85,7 +100,18 @@ fi
 
 # 列出所有备份文件，按 mtime 排序（新→旧）。.sql 和 .sql.gz 统一参与保留策略，
 # 否则 .gz 会无限累积（docker exec pg_dump | gzip 产生的快照）。
-mapfile -t ALL_BAKS < <(ls -t "$BAK_DIR"/pg_dump_*.sql "$BAK_DIR"/pg_dump_*.sql.gz 2>/dev/null || true)
+# quick（排除 logs）与 full/全量快照分开计数：quick 体积可忽略（~340K）但高频，
+# 全量含 logs 一份 300M+，混在一起会把同日的全量挤掉（曾把 model_cleanup 挤丢）。
+mapfile -t ALL_QUICK < <(ls -t "$BAK_DIR"/pg_dump_quick_*.sql "$BAK_DIR"/pg_dump_quick_*.sql.gz 2>/dev/null || true)
+if [[ ${#ALL_QUICK[@]} -gt $MAX_BACKUPS ]]; then
+    for f in "${ALL_QUICK[@]:$MAX_BACKUPS}"; do
+        rm -f "$f"
+        log "  删除: $(basename "$f")"
+    done
+fi
+
+mapfile -t ALL_BAKS < <(ls -t "$BAK_DIR"/pg_dump_*.sql "$BAK_DIR"/pg_dump_*.sql.gz 2>/dev/null \
+    | grep -v '/pg_dump_quick_' || true)
 
 if [[ ${#ALL_BAKS[@]} -le $MAX_BACKUPS ]]; then
     log "  当前仅 ${#ALL_BAKS[@]} 份备份，无需清理"

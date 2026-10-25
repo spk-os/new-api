@@ -1,5 +1,5 @@
 #!/bin/bash
-# /work/SPK-OS/soft/basic/new-api/ha/bin/gateway-switch.sh
+# /work/spk-os/soft/basic/new-api/ha/bin/gateway-switch.sh
 # LLM Gateway 蓝绿切换脚本
 # 用法: ./gateway-switch.sh [blue|green|status|rollback]
 
