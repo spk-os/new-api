@@ -20,6 +20,14 @@ type GatewayYaml struct {
 	// of GatewayRoutingEnabled — it is a new-api-global capability, not
 	// channel-scoped model_mapping. See ModelNameMappingMiddleware.
 	//
+	// A replacement may hold a comma-separated list of time-windowed entries:
+	// "[01-08]hy4-preview,[09-23]step-5-preview" — the entry whose
+	// [start-end] hour window covers the current hour wins (first matching
+	// window in list order); without a window hit, the first bare entry
+	// applies; when every entry is windowed and none matches, the first
+	// entry applies (config order as priority). A plain single-model
+	// replacement behaves as before. See time_window.go.
+	//
 	// When this field is nil (absent from the YAML), the compiled-in defaults
 	// (DefaultModelNameMapping) apply. Set it to an empty list (`[]`) to
 	// disable mapping entirely.
@@ -324,6 +332,14 @@ type Candidate struct {
 	// requests sort by TierIndex FIRST (admin intent: the array order is the
 	// model priority), then by daily tier / provider order within one model.
 	TierIndex int
+
+	// WindowRank is the time-window priority group of the candidate for
+	// "auto" requests routed via a time-windowed modelCapabilities list
+	// ("[01-08]hy4-preview,[09-23]step-5-preview"): 0 = the active window's
+	// entry (highest), 1 = bare/unhit entries (config order). Sorting puts
+	// WindowRank ahead of provider order but behind TierIndex and
+	// costFirst. -1 = not applicable (non-auto request or plain list).
+	WindowRank int
 }
 
 // GatewayPlan holds the execution plan for a request.

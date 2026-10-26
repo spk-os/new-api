@@ -63,9 +63,16 @@ func matchPattern(pattern, model string) bool {
 	return pattern == model
 }
 
-// matchMapping returns the first rule's replacement whose pattern matches
-// model, preserving list order so operators can express precedence. Empty
-// replacements are treated as no-match.
+// matchMapping returns rule replacement resolution for model, preserving
+// list order so operators can express precedence. Empty replacements are
+// treated as no-match.
+//
+// A replacement may be a comma-separated list of time-windowed entries
+// ("[01-08]hy4-preview,[09-23]step-5-preview"): the entry whose window
+// covers the current hour wins; without a hit, the first bare (windowless)
+// entry applies; when every entry is windowed and none matches, the first
+// entry applies (config order as priority). A plain single-model
+// replacement behaves exactly as before.
 func matchMapping(rules []string, model string) (replacement string, ok bool) {
 	for _, rule := range rules {
 		pattern, repl := splitMappingRule(rule)
@@ -73,6 +80,9 @@ func matchMapping(rules []string, model string) (replacement string, ok bool) {
 			continue
 		}
 		if matchPattern(pattern, model) {
+			if entries, err := parseTimeWindowEntries(repl); err == nil && len(entries) > 0 {
+				return pickTimeWindowModel(entries, timeWindowNowFunc()), true
+			}
 			return repl, true
 		}
 	}
@@ -86,6 +96,9 @@ func matchMapping(rules []string, model string) (replacement string, ok bool) {
 // Sonnet/Opus/Haiku — reach a routable model without per-channel
 // model_mapping. The rewrite happens early so the downstream distributor
 // parses, whitelists, and bills against the mapped name.
+//
+// Replacement values support the "[HH-HH]model" time-window syntax — the
+// active window's model is resolved per request time (see time_window.go).
 //
 // Register this middleware on relay routes BEFORE GatewayStrategyMiddleware
 // and Distribute, so the strategy layer and channel selection both see the

@@ -283,13 +283,18 @@ func validate(cfg *GatewayYaml) error {
 	}
 
 	// model_name_mapping rules — each must be "pattern: replacement" with
-	// both halves non-empty. An empty list is allowed (disables mapping);
-	// nil (absent) is also valid and falls back to compiled-in defaults at
-	// request time.
+	// both halves non-empty. A replacement may be a comma-separated list of
+	// time-windowed entries ("[01-08]hy4-preview,bare-model"); every entry
+	// must parse (window hours in [00,23], model name non-empty). An empty
+	// list is allowed (disables mapping); nil (absent) is also valid and
+	// falls back to compiled-in defaults at request time.
 	for i, rule := range cfg.ModelNameMapping {
 		pat, repl := splitMappingRule(rule)
 		if strings.TrimSpace(pat) == "" || strings.TrimSpace(repl) == "" {
 			return fmt.Errorf("gateway config: model_name_mapping[%d] must be \"pattern: replacement\" with both halves non-empty, got %q", i, rule)
+		}
+		if _, err := parseTimeWindowEntries(repl); err != nil {
+			return fmt.Errorf("gateway config: model_name_mapping[%d] replacement: %v", i, err)
 		}
 	}
 	return nil

@@ -3,9 +3,58 @@ package gateway
 import (
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/QuantumNous/new-api/common"
 )
+
+// capabilityModels resolves the capability list for capName from the
+// profile's modelCapabilities map. Entries support the "[HH-HH]model"
+// time-window syntax: returns (windowEntries, bareOrPlain, anyWindowed)
+// where windowEntries holds the parsed list (with bare entries kept in
+// order for fallback) and anyWindowed reports whether at least one entry
+// carried a window. A plain list (no windows) returns the models as-is.
+func capabilityModels(p *EffectiveProfile, capName string) (entries []timeWindowEntry, anyWindowed bool, configured bool) {
+	if p == nil || p.Routing == nil || p.Routing.ModelCapabilities == nil {
+		return nil, false, false
+	}
+	raw, ok := p.Routing.ModelCapabilities[capName]
+	if !ok {
+		return nil, false, false
+	}
+	for _, item := range raw {
+		e, err := parseTimeWindowEntry(item)
+		if err != nil {
+			continue // save-time validate rejects bad entries; defensive here
+		}
+		if e.HasWindow {
+			anyWindowed = true
+		}
+		entries = append(entries, e)
+	}
+	return entries, anyWindowed, len(entries) > 0
+}
+
+// stampWindowRank sets WindowRank on candidates of an "auto" request whose
+// capability list carried time windows: 0 for the active window's model,
+// 1 for every other model of the list (bare fallback included). No-op for
+// lists without windows (all candidates stay at the init value).
+func stampWindowRank(out []*Candidate, entries []timeWindowEntry, now time.Time) {
+	if len(entries) == 0 {
+		return
+	}
+	active := pickTimeWindowModel(entries, now)
+	for _, cand := range out {
+		if cand == nil {
+			continue
+		}
+		if cand.ActualModel == active {
+			cand.WindowRank = 0
+		} else {
+			cand.WindowRank = 1
+		}
+	}
+}
 
 func BuildCandidates(profile *EffectiveProfile, requestModel string, opts *GatewayOptions) []*Candidate {
 	cfg := GetConfig()
@@ -62,8 +111,18 @@ func BuildCandidates(profile *EffectiveProfile, requestModel string, opts *Gatew
 				}
 				cand := newCandidate(pid, p, mg, m)
 				cand.TierIndex = tierIdx
+				cand.WindowRank = -1
 				out = append(out, cand)
 			}
+		}
+	}
+
+	// "auto" requests whose capability list carries "[HH-HH]" time windows:
+	// stamp the per-candidate window rank so sortCandidates can put the
+	// active window's model ahead of provider order.
+	if requestModel == "auto" {
+		if entries, anyWindowed, configured := capabilityModels(profile, "auto"); anyWindowed && configured {
+			stampWindowRank(out, entries, timeWindowNowFunc())
 		}
 	}
 
@@ -206,6 +265,15 @@ func sortCandidates(cs []*Candidate, p *EffectiveProfile, opts *GatewayOptions) 
 		// above the tier model order as well.
 		if cs[i].TierIndex >= 0 && cs[j].TierIndex >= 0 && cs[i].TierIndex != cs[j].TierIndex && !tierCostFirst {
 			return cs[i].TierIndex < cs[j].TierIndex
+		}
+		// Time-windowed "auto" capability lists: the active window's model
+		// (WindowRank 0) ranks above the rest (1) but below tiers and the
+		// cost strategies — an admin declaring windows wants time-based
+		// dispatch to win over provider order, not over an explicit
+		// cost-first intent.
+		if !costFirst && cs[i].WindowRank != cs[j].WindowRank &&
+			cs[i].WindowRank >= 0 && cs[j].WindowRank >= 0 {
+			return cs[i].WindowRank < cs[j].WindowRank
 		}
 		if costFirst && cs[i].IsFree != cs[j].IsFree {
 			return cs[i].IsFree
