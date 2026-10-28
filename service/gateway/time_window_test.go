@@ -22,21 +22,19 @@ func setHour(t *testing.T, h int) {
 func TestParseTimeWindowEntry(t *testing.T) {
 	e, err := parseTimeWindowEntry("[01-08]hy4-preview")
 	require.NoError(t, err)
-	assert.True(t, e.HasWindow)
-	assert.Equal(t, 1, e.StartHour)
-	assert.Equal(t, 8, e.EndHour)
+	require.True(t, e.hasWindow())
+	require.Equal(t, [][2]int{{1, 8}}, e.Windows)
 	assert.Equal(t, "hy4-preview", e.Model)
 
 	// 1 位小时与 [01-08] 等价
 	e, err = parseTimeWindowEntry("[1-8]hy4-preview")
 	require.NoError(t, err)
-	assert.Equal(t, 1, e.StartHour)
-	assert.Equal(t, 8, e.EndHour)
+	assert.Equal(t, [][2]int{{1, 8}}, e.Windows)
 
 	// 裸条目
 	e, err = parseTimeWindowEntry("step-5-preview")
 	require.NoError(t, err)
-	assert.False(t, e.HasWindow)
+	assert.False(t, e.hasWindow())
 	assert.Equal(t, "step-5-preview", e.Model)
 
 	// 非法：小时越界 / 缺模型名 / 空
@@ -46,6 +44,36 @@ func TestParseTimeWindowEntry(t *testing.T) {
 	assert.Error(t, err, "缺模型名必须报错")
 	_, err = parseTimeWindowEntry("  ")
 	assert.Error(t, err, "空条目必须报错")
+}
+
+// TestParseTimeWindowEntry_MultiWindow 保护一个模型挂多个时间窗的解析：
+// "[18-08][12-14]model" 是两个独立窗口共享同一模型，而非第二个窗被当成
+// 模型名的一部分。
+func TestParseTimeWindowEntry_MultiWindow(t *testing.T) {
+	e, err := parseTimeWindowEntry("[18-08][12-14]deepseek-v4.1-flash")
+	require.NoError(t, err)
+	require.True(t, e.hasWindow())
+	assert.Equal(t, [][2]int{{18, 8}, {12, 14}}, e.Windows)
+	assert.Equal(t, "deepseek-v4.1-flash", e.Model)
+
+	// 窗口间允许空格分隔（条目已在逗号分割后整体 TrimSpace）
+	e, err = parseTimeWindowEntry("[01-08] [12-14]model-x")
+	require.NoError(t, err)
+	assert.Equal(t, [][2]int{{1, 8}, {12, 14}}, e.Windows)
+	assert.Equal(t, "model-x", e.Model)
+
+	// 三个窗口
+	e, err = parseTimeWindowEntry("[00-02][06-08][22-23]m3")
+	require.NoError(t, err)
+	assert.Equal(t, [][2]int{{0, 2}, {6, 8}, {22, 23}}, e.Windows)
+
+	// 多窗中任一小时越界整体报错
+	_, err = parseTimeWindowEntry("[18-08][12-25]bad")
+	assert.Error(t, err, "第二个窗口 25 点越界必须报错")
+
+	// 残缺窗口（右括号缺失）不得被静默当模型名
+	_, err = parseTimeWindowEntry("[18-08][12-14model")
+	assert.Error(t, err, "残缺窗口必须报错")
 }
 
 func TestParseTimeWindowEntries(t *testing.T) {
@@ -59,7 +87,13 @@ func TestParseTimeWindowEntries(t *testing.T) {
 	entries, err = parseTimeWindowEntries("[09-23]step-5-preview,hy4-preview")
 	require.NoError(t, err)
 	require.Len(t, entries, 2)
-	assert.False(t, entries[1].HasWindow)
+	assert.False(t, entries[1].hasWindow())
+
+	// 逗号后空格 + 多窗条目（用户实际配置形态）
+	entries, err = parseTimeWindowEntries("[01-08]hy4-preview, [18-08][12-14]deepseek-v4.1-flash")
+	require.NoError(t, err)
+	require.Len(t, entries, 2)
+	assert.Equal(t, [][2]int{{18, 8}, {12, 14}}, entries[1].Windows)
 
 	// 单模型（无窗口）保持原行为
 	entries, err = parseTimeWindowEntries("glm-5.3")
@@ -119,6 +153,69 @@ func TestPickTimeWindowModel_OverlappingWindowsFirstListed(t *testing.T) {
 
 	setHour(t, 9) // 两个窗口都命中
 	assert.Equal(t, "morning-model", pickTimeWindowModel(entries, timeWindowNowFunc()))
+}
+
+// TestPickTimeWindowModel_MultiWindowAnyHit 保护多窗口条目的选路语义：
+// 任一窗口命中当前小时即选中该条目。
+func TestPickTimeWindowModel_MultiWindowAnyHit(t *testing.T) {
+	// agent-reviewer 生产目标形态：[01-08]hy4-preview +
+	// [18-08][12-14]deepseek-v4.1-flash
+	entries, err := parseTimeWindowEntries("[01-08]hy4-preview,[18-08][12-14]deepseek-v4.1-flash")
+	require.NoError(t, err)
+
+	// 跨午夜窗 [18-08] 命中（18~23 点与 0 点；1~8 点与靠前的 [01-08]
+	// 窗重叠，由配置顺序决定 → 归入下面的 hy4-preview 断言）
+	for _, h := range []int{18, 20, 23, 0} {
+		setHour(t, h)
+		assert.Equal(t, "deepseek-v4.1-flash", pickTimeWindowModel(entries, timeWindowNowFunc()),
+			"hour=%d 应命中 [18-08] 窗", h)
+	}
+	// 日间窗 [12-14] 命中
+	for _, h := range []int{12, 13, 14} {
+		setHour(t, h)
+		assert.Equal(t, "deepseek-v4.1-flash", pickTimeWindowModel(entries, timeWindowNowFunc()),
+			"hour=%d 应命中 [12-14] 窗", h)
+	}
+	// 1~8 点：两窗均命中（[18-08] 也覆盖这些小时），配置顺序靠前的
+	// [01-08] 条目胜出
+	for _, h := range []int{1, 4, 5, 8} {
+		setHour(t, h)
+		assert.Equal(t, "hy4-preview", pickTimeWindowModel(entries, timeWindowNowFunc()),
+			"hour=%d 重叠窗取列表靠前", h)
+	}
+	// 9~11、15~17 点：两窗均不命中且无裸条目 → 配置顺序第一条
+	for _, h := range []int{9, 10, 11, 15, 16, 17} {
+		setHour(t, h)
+		assert.Equal(t, "hy4-preview", pickTimeWindowModel(entries, timeWindowNowFunc()),
+			"hour=%d 全不命中应按配置顺序取第一条", h)
+	}
+}
+
+// TestMatchMapping_MultiWindowReplacement 端到端保护用户给定的
+// agent-reviewer 条目（多窗 + 逗号后空格）在 model_name_mapping 中按小时
+// 正确改写。
+func TestMatchMapping_MultiWindowReplacement(t *testing.T) {
+	rules := []string{"agent-reviewer:[01-08]hy4-preview, [18-08][12-14]deepseek-v4.1-flash"}
+
+	setHour(t, 20)
+	repl, ok := matchMapping(rules, "agent-reviewer")
+	require.True(t, ok)
+	assert.Equal(t, "deepseek-v4.1-flash", repl, "20 点应命中 [18-08] 跨午夜窗")
+
+	setHour(t, 13)
+	repl, ok = matchMapping(rules, "agent-reviewer")
+	require.True(t, ok)
+	assert.Equal(t, "deepseek-v4.1-flash", repl, "13 点应命中 [12-14] 日间窗")
+
+	setHour(t, 4)
+	repl, ok = matchMapping(rules, "agent-reviewer")
+	require.True(t, ok)
+	assert.Equal(t, "hy4-preview", repl, "4 点应命中靠前的 [01-08] 窗")
+
+	setHour(t, 16)
+	repl, ok = matchMapping(rules, "agent-reviewer")
+	require.True(t, ok)
+	assert.Equal(t, "hy4-preview", repl, "16 点全不命中应取配置顺序第一条")
 }
 
 func TestMatchMapping_TimeWindowReplacement(t *testing.T) {

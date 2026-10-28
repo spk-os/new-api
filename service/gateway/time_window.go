@@ -7,12 +7,18 @@ package gateway
 // 裸条目（未配置时间窗的）次之，带窗但当前不命中的条目与裸条目同级、
 // 按配置顺序参与排序。窗口按本地小时解释：[01-08] 覆盖 01:00:00–08:59:59；
 // start > end 表示跨午夜（[22-06] 覆盖 22 点与次日 06 点前，含两端）。
+// 一个模型可挂多个窗口（重复 "[HH-HH]" 前缀），任一窗口命中即生效。
 //
 // 示例（model_name_mapping）：
 //
 //	'agent-tester:[01-08]hy4-preview,[09-23]step-5-preview'
 //	→ 1~8 点优先 hy4-preview，9~23 点优先 step-5-preview，其余小时
 //	  无裸条目可退，按配置顺序取第一条（hy4-preview）。
+//
+//	'agent-reviewer:[01-08]hy4-preview, [18-08][12-14]deepseek-v4.1-flash'
+//	→ 1~8 点优先 hy4-preview；18 点到次日 08 点与 12~14 点优先
+//	  deepseek-v4.1-flash（两个窗口共享一个模型），其余小时无裸条目
+//	  可退，按配置顺序取第一条（hy4-preview）。
 
 import (
 	"fmt"
@@ -26,24 +32,38 @@ import (
 // dailyTierNowFunc 同一模式）。
 var timeWindowNowFunc = time.Now
 
-// timeWindowEntry 是一条带可选时间窗的模型条目。
+// timeWindowEntry 是一条带可选时间窗的模型条目。Windows 为空表示裸条目；
+// 非空时每个元素是一个 [start,end] 窗口（小时 0-23，含两端，start > end
+// 表示跨午夜），任一窗口命中当前小时即视为条目命中。
 type timeWindowEntry struct {
-	HasWindow bool
-	StartHour int // [0,23]
-	EndHour   int // [0,23]，含
-	Model     string
+	Windows [][2]int
+	Model   string
 }
 
-// timeWindowRe 匹配 "[HH-HH]model"；小时允许 1~2 位数字（[1-8] == [01-08]）。
-var timeWindowRe = regexp.MustCompile(`^\[(\d{1,2})-(\d{1,2})\](.+)$`)
+// hasWindow 报告条目是否携带时间窗。
+func (e timeWindowEntry) hasWindow() bool {
+	return len(e.Windows) > 0
+}
 
-// parseTimeWindowEntry 解析单条 "[HH-HH]model" 或裸 "model"。
+// timeWindowRe 匹配单个 "[HH-HH]" 前缀；小时允许 1~2 位数字
+// （[1-8] == [01-08]）。多窗口条目由 parseTimeWindowEntry 循环剥前缀解析。
+var timeWindowRe = regexp.MustCompile(`^\[(\d{1,2})-(\d{1,2})\]`)
+
+// parseTimeWindowEntry 解析单条 "…[HH-HH]model" 或裸 "model"：任意个
+// "[HH-HH]" 前缀组成窗口列表，剩余部分是模型名。窗口间允许空白。
 func parseTimeWindowEntry(s string) (timeWindowEntry, error) {
 	s = strings.TrimSpace(s)
 	if s == "" {
 		return timeWindowEntry{}, fmt.Errorf("empty model entry")
 	}
-	if m := timeWindowRe.FindStringSubmatch(s); m != nil {
+	var windows [][2]int
+	rest := s
+	for {
+		rest = strings.TrimLeft(rest, " \t")
+		m := timeWindowRe.FindStringSubmatch(rest)
+		if m == nil {
+			break
+		}
 		start, err1 := strconv.Atoi(m[1])
 		end, err2 := strconv.Atoi(m[2])
 		if err1 != nil || err2 != nil {
@@ -52,11 +72,18 @@ func parseTimeWindowEntry(s string) (timeWindowEntry, error) {
 		if start > 23 || end > 23 {
 			return timeWindowEntry{}, fmt.Errorf("hour out of range [00-23] in %q", s)
 		}
-		model := strings.TrimSpace(m[3])
+		windows = append(windows, [2]int{start, end})
+		rest = rest[len(m[0]):]
+	}
+	if len(windows) > 0 {
+		model := strings.TrimSpace(rest)
 		if model == "" {
 			return timeWindowEntry{}, fmt.Errorf("missing model name in %q", s)
 		}
-		return timeWindowEntry{HasWindow: true, StartHour: start, EndHour: end, Model: model}, nil
+		if strings.HasPrefix(model, "[") {
+			return timeWindowEntry{}, fmt.Errorf("malformed time window in %q", s)
+		}
+		return timeWindowEntry{Windows: windows, Model: model}, nil
 	}
 	if strings.HasPrefix(s, "[") {
 		return timeWindowEntry{}, fmt.Errorf("malformed time window in %q", s)
@@ -92,11 +119,14 @@ func hourInTimeWindow(hour, start, end int) bool {
 	return hour >= start || hour <= end
 }
 
-// rank 返回条目在 now 时刻的优先级组：0 = 窗命中（最高），1 = 裸条目或
-// 窗不命中（fallback，按配置顺序）。
+// rank 返回条目在 now 时刻的优先级组：0 = 任一窗口命中（最高），
+// 1 = 裸条目或全部窗口不命中（fallback，按配置顺序）。
 func (e timeWindowEntry) rank(now time.Time) int {
-	if e.HasWindow && hourInTimeWindow(now.Hour(), e.StartHour, e.EndHour) {
-		return 0
+	hour := now.Hour()
+	for _, w := range e.Windows {
+		if hourInTimeWindow(hour, w[0], w[1]) {
+			return 0
+		}
 	}
 	return 1
 }
@@ -114,7 +144,7 @@ func pickTimeWindowModel(entries []timeWindowEntry, now time.Time) string {
 		}
 	}
 	for _, e := range entries {
-		if !e.HasWindow {
+		if !e.hasWindow() {
 			return e.Model
 		}
 	}

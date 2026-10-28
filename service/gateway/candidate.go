@@ -27,7 +27,7 @@ func capabilityModels(p *EffectiveProfile, capName string) (entries []timeWindow
 		if err != nil {
 			continue // save-time validate rejects bad entries; defensive here
 		}
-		if e.HasWindow {
+		if e.hasWindow() {
 			anyWindowed = true
 		}
 		entries = append(entries, e)
