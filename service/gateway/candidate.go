@@ -243,6 +243,16 @@ func matchModel(m string, mg *ModelGroup, req string, p *EffectiveProfile) bool 
 	case req == "" || req == "auto":
 		return true
 	case req == "auto-free":
+		// "free" is a real capability key too: honor a configured
+		// modelCapabilities.free list (with "[HH-HH]" time windows) before
+		// falling back to the historical free-tag match.
+		if p != nil && p.Routing != nil && p.Routing.ModelCapabilities != nil {
+			if list, ok := p.Routing.ModelCapabilities["free"]; ok {
+				if matchCapabilityEntry(list, m, timeWindowNowFunc()) {
+					return true
+				}
+			}
+		}
 		return hasTag(mg, "free")
 	case strings.HasPrefix(req, "auto-"):
 		capName := strings.TrimPrefix(req, "auto-")
