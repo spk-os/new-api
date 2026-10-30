@@ -322,3 +322,57 @@ func TestBuildCandidates_PlainCapabilityNoWindowRank(t *testing.T) {
 		assert.Equal(t, -1, cand.WindowRank, "普通列表不得打 WindowRank 标")
 	}
 }
+
+// TestBuildCandidates_AutoCapabilityTimeWindow 保护 auto-<capability> 场景：
+// modelCapabilities.<cap> 列表带时间窗时，auto-X 请求在窗内小时只命中
+// 窗口模型，非窗口小时回落到裸条目/窗口模型本身。
+func TestBuildCandidates_AutoCapabilityTimeWindow(t *testing.T) {
+	cfg := twoProviderConfig()
+	// 用户目标形态：document: ['[01-07]hy4-preview,hy3']
+	cfg.LLMGateway["default"].Routing.ModelCapabilities = map[string][]string{
+		"document": {"[01-07]hy4-preview", "hy3"},
+	}
+	cfg.Providers["zen"].Models = []*ModelGroup{
+		{Name: "free", Model: "hy4-preview", Order: 1, Enabled: true},
+	}
+	cfg.Providers["ali"].Models = []*ModelGroup{
+		{Name: "coder", Model: "hy3", Order: 1, Enabled: true},
+	}
+	setTestConfig(t, cfg)
+	prof := ResolveEffectiveProfile("default", "", "", "")
+
+	// 窗内（3 点）：auto-document 命中窗模型 hy4-preview（时间分发语义
+	// 与用户 model_name_mapping 一致——窗命中模型优先，其余模型仍可作
+	// 重试链兜底，但首位必须是窗模型）
+	setHour(t, 3)
+	cands := BuildCandidates(prof, "auto-document", nil)
+	require.NotEmpty(t, cands, "窗内小时必须解析出候选")
+	assert.Equal(t, "hy4-preview", cands[0].ActualModel, "窗内 auto-document 首选必须是窗模型")
+
+	// 窗外（12 点）：回落到裸条目 hy3
+	setHour(t, 12)
+	cands = BuildCandidates(prof, "auto-document", nil)
+	require.NotEmpty(t, cands, "窗外小时必须回落到裸条目")
+	assert.Equal(t, "hy3", cands[0].ActualModel, "窗外 auto-document 首选必须是裸条目")
+}
+
+// TestMatchCapabilityEntry 保护 capability 列表时间窗匹配的核心语义。
+func TestMatchCapabilityEntry(t *testing.T) {
+	list := []string{"[01-07]hy4-preview", "hy3"}
+
+	setHour(t, 3)
+	assert.True(t, matchCapabilityEntry(list, "hy4-preview", timeWindowNowFunc()), "窗内窗口模型匹配")
+	assert.True(t, matchCapabilityEntry(list, "hy3", timeWindowNowFunc()), "裸条目始终匹配")
+	assert.False(t, matchCapabilityEntry(list, "other-model", timeWindowNowFunc()))
+
+	setHour(t, 12)
+	assert.False(t, matchCapabilityEntry(list, "hy4-preview", timeWindowNowFunc()), "窗外窗口模型不匹配")
+	assert.True(t, matchCapabilityEntry(list, "hy3", timeWindowNowFunc()))
+
+	// 全带窗列表：非命中小时取配置顺序第一条
+	allWindowed := []string{"[18-08][12-14]deepseek-v4.1-flash"}
+	setHour(t, 20)
+	assert.True(t, matchCapabilityEntry(allWindowed, "deepseek-v4.1-flash", timeWindowNowFunc()))
+	setHour(t, 16)
+	assert.True(t, matchCapabilityEntry(allWindowed, "deepseek-v4.1-flash", timeWindowNowFunc()), "全带窗不命中时取第一条")
+}

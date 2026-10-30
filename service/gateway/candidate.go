@@ -202,6 +202,36 @@ func tierCandidateModel(p *EffectiveProfile, tierName, m string) (int, bool) {
 	return -1, false
 }
 
+// matchCapabilityEntry reports whether model m is reachable through the
+// modelCapabilities list at now. The list may mix plain names and
+// "[HH-HH]model" time-windowed entries; the model selected for the current
+// moment (active window's model, else first bare entry, else first entry —
+// pickTimeWindowModel's semantics) matches, plus plain names always match
+// so non-windowed lists keep their historical behavior.
+func matchCapabilityEntry(list []string, m string, now time.Time) bool {
+	entries := make([]timeWindowEntry, 0, len(list))
+	anyWindowed := false
+	for _, item := range list {
+		e, err := parseTimeWindowEntry(item)
+		if err != nil {
+			continue // save-time validate rejects bad entries; defensive here
+		}
+		if e.hasWindow() {
+			anyWindowed = true
+		}
+		entries = append(entries, e)
+		if !e.hasWindow() && e.Model == m {
+			return true
+		}
+	}
+	if !anyWindowed {
+		return false
+	}
+	// Windowed list: the time-selected model is reachable; other windowed
+	// entries are held for their own windows.
+	return pickTimeWindowModel(entries, now) == m
+}
+
 func matchModel(m string, mg *ModelGroup, req string, p *EffectiveProfile) bool {
 	switch {
 	case isTierName(req):
@@ -218,7 +248,7 @@ func matchModel(m string, mg *ModelGroup, req string, p *EffectiveProfile) bool 
 		capName := strings.TrimPrefix(req, "auto-")
 		if p != nil && p.Routing != nil && p.Routing.ModelCapabilities != nil {
 			if list, ok := p.Routing.ModelCapabilities[capName]; ok {
-				if contains(list, m) {
+				if matchCapabilityEntry(list, m, timeWindowNowFunc()) {
 					return true
 				}
 			}
